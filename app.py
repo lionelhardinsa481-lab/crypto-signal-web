@@ -119,4 +119,8 @@ else:
     st.dataframe(df.style.applymap(color_dir, subset=["方向"]), use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.caption("⚠️ 提示：Streamlit云端需页面刷新才会触发推送。建议手机浏览器安装 Auto Refresh 插件（设置5分钟刷新），或手动下拉刷新。严格止损，仓位≤2%。")
+# 🧪 测试推送按钮（验证通过后请删除此段）
+if st.button("🧪 点击测试推送功能"):
+    send_push("🎉 测试成功！机器人已连通，信号触发时将自动推送到此手机。")
+    st.success("✅ 推送请求已发送，请查看手机钉钉/企微")
+    st.caption("⚠️ 提示：Streamlit云端需页面刷新才会触发推送。建议手机浏览器安装 Auto Refresh 插件（设置5分钟刷新），或手动下拉刷新。严格止损，仓位≤2%。")
