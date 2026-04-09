@@ -6,7 +6,7 @@ SYMBOLS = ["MEGA/USDT","ENJ/USDT","AGT/USDT"]
 # ================= 配置区 =================
 # 1. 监控币种（可自由增减，注意保持 "币种/USDT" 格式）
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "AVAX/USDT", "LINK/USDT", "XRP/USDT"]
-DINGTALK_WEBHOOK =https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3
+DINGTALK_WEBHOOK ="https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 # 2. 推送链接（二填一，另一个留空即可）
 DINGTALK_WEBHOOK = "在此粘贴钉钉Webhook链接"
 WECOM_WEBHOOK = "在此粘贴企业微信Webhook链接"
