@@ -21,21 +21,26 @@ if "last_push_time" not in st.session_state:
     st.session_state.last_push_time = ""
 
 def send_push(text):
-    """发送钉钉或企微通知"""
     if not DINGTALK_WEBHOOK and not WECOM_WEBHOOK:
+        st.warning("⚠️ 未配置 Webhook 链接")
         return
     
-    # 钉钉必须包含关键词"信号"才能发送成功
     content = f"【信号提醒】\n{text}"
     
     if DINGTALK_WEBHOOK:
         try:
-            requests.post(DINGTALK_WEBHOOK, json={"msgtype":"text","text":{"content":content}}, timeout=5)
-        except: pass
+            response = requests.post(DINGTALK_WEBHOOK, json={"msgtype":"text","text":{"content":content}}, timeout=5)
+            # 打印返回结果，方便排错
+            st.write(f"🔵 钉钉返回: {response.status_code} | {response.text}")
+        except Exception as e:
+            st.error(f"❌ 钉钉推送异常: {e}")
+            
     if WECOM_WEBHOOK:
         try:
-            requests.post(WECOM_WEBHOOK, json={"msgtype":"text","text":{"content":content}}, timeout=5)
-        except: pass
+            response = requests.post(WECOM_WEBHOOK, json={"msgtype":"text","text":{"content":content}}, timeout=5)
+            st.write(f"🟢 企微返回: {response.status_code} | {response.text}")
+        except Exception as e:
+            st.error(f"❌ 企微推送异常: {e}")
 
 def get_signals():
     exchange = ccxt.binance({"enableRateLimit": True})
