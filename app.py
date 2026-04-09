@@ -2,7 +2,7 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import requests
-
+SYMBOLS = ["MEGA/USDT","ENJ/USDT","AGT/USDT"]
 # ================= 配置区 =================
 # 1. 监控币种（可自由增减，注意保持 "币种/USDT" 格式）
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "AVAX/USDT", "LINK/USDT", "XRP/USDT"]
