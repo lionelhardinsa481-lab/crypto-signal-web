@@ -5,7 +5,7 @@ import requests
 import time
 
 # ================= 配置区 =================
-DINGTALK_WEBHOOK = "在此粘贴你的钉钉 Webhook"
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 # ==========================================
 
@@ -13,41 +13,43 @@ st.set_page_config(page_title="Crypto 合约信号监控", layout="wide", page_i
 st.title("📊 币安合约 Top50 多周期信号监控")
 st.caption("🔥 动态追踪资金热点 | 布林收口过滤 | 趋势+动量+量价共振 | 防重复推送")
 
-# ================= 动态币种池 =================
-@st.cache_data(ttl=1800)
+# ================= 动态币种池 (高可用重构版) =================
+@st.cache_data(ttl=3600)
 def get_top_futures_symbols(limit=50):
+    # 精选50主流USDT永续合约（降级备用池）
+    fallback_symbols = [
+        "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
+        "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
+        "TON/USDT:USDT", "DOT/USDT:USDT", "MATIC/USDT:USDT", "SHIB/USDT:USDT", "LTC/USDT:USDT",
+        "UNI/USDT:USDT", "ATOM/USDT:USDT", "ETC/USDT:USDT", "FIL/USDT:USDT", "AAVE/USDT:USDT",
+        "NEAR/USDT:USDT", "OP/USDT:USDT", "APT/USDT:USDT", "ARB/USDT:USDT", "STX/USDT:USDT",
+        "WIF/USDT:USDT", "PEPE/USDT:USDT", "FET/USDT:USDT", "RENDER/USDT:USDT", "IMX/USDT:USDT",
+        "SUI/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "INJ/USDT:USDT", "RUNE/USDT:USDT",
+        "FTM/USDT:USDT", "ALGO/USDT:USDT", "SAND/USDT:USDT", "MANA/USDT:USDT", "AXS/USDT:USDT",
+        "GALA/USDT:USDT", "EOS/USDT:USDT", "XLM/USDT:USDT", "VET/USDT:USDT", "THETA/USDT:USDT",
+        "ICP/USDT:USDT", "EGLD/USDT:USDT", "FLOW/USDT:USDT", "CHZ/USDT:USDT", "ENJ/USDT:USDT"
+    ]
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
+        # 使用 ccxt 原生接口，自带重试/限频/JSON解析保护
+        exchange = ccxt.binance({
+            "options": {"defaultType": "swap"},
+            "enableRateLimit": True,
+            "timeout": 15000,
+            "verbose": False
+        })
+        tickers = exchange.fetch_tickers()
+        # 过滤 USDT 永续合约，按成交额排序
+        usdt_perps = {
+            k: v for k, v in tickers.items()
+            if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0
         }
-        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
-        if not isinstance(data, list):
-            raise ValueError(f"API返回非列表格式: {type(data).__name__}")
-
-        usdt_perps = [
-            d for d in data
-            if d.get("symbol", "").endswith("USDT")
-            and "USDC" not in d.get("symbol", "")
-            and d.get("status") == "TRADING"
-        ]
-
-        sorted_perps = sorted(usdt_perps, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-        symbols = [f"{p['symbol'].replace('USDT', '')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
-        return symbols
-
+        sorted_pairs = sorted(usdt_perps.items(), key=lambda x: x[1]["quoteVolume"], reverse=True)
+        symbols = [pair[0] for pair in sorted_pairs[:limit]]
+        return symbols, "✅ Binance 实时排行"
     except Exception as e:
-        st.warning(f"⚠️ 获取币安 Top50 失败，使用备用列表: {str(e)[:60]}")
-        return [
-            "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
-            "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
-        ]
+        return fallback_symbols, f"⚠️ 动态获取失败 ({str(e)[:40]})，已切换备用池"
 
-SYMBOLS = get_top_futures_symbols(50)
+SYMBOLS, DATA_SOURCE = get_top_futures_symbols(50)
 
 # ================= 侧边栏配置 =================
 st.sidebar.header("⚙️ 策略参数配置")
@@ -84,13 +86,13 @@ with st.sidebar.expander("📊 当前生效阈值", expanded=True):
     st.markdown(f"- **EMA回踩**: `{'不强制' if not cfg['req_pullback'] else f'±{cfg['pullback_tol']*100:.1f}%'}`")
     st.markdown(f"- **布林收口**: `{'关闭' if not cfg['req_squeeze'] else f'带宽 < 近20周期极值×{cfg['squeeze_tol']}'}`")
     st.info(f"📈 预期胜率区间: {cfg['expected_wr']}")
-    st.caption("💡 监控池已自动切换为币安 USDT 永续合约 Top50（按24H成交额排序）")
+    st.caption(f"🌐 数据源状态: {DATA_SOURCE}")
 
 # 🤖 机器人测试模块
 st.sidebar.divider()
 st.sidebar.subheader("📡 推送通道测试")
 if st.sidebar.button("📤 一键测试推送", type="primary"):
-    test_msg = f"【系统测试】Crypto合约监控机器人已就绪！✅\n当前周期: {timeframe}\n当前模式: {mode.split(' ')[0]}\n监控币种: {len(SYMBOLS)} 个\n测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    test_msg = f"【系统测试】Crypto合约监控机器人已就绪！✅\n当前周期: {timeframe}\n当前模式: {mode.split(' ')[0]}\n监控币种: {len(SYMBOLS)} 个\n数据源: {DATA_SOURCE}\n测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
     platforms = {"钉钉": DINGTALK_WEBHOOK, "企微": WECOM_WEBHOOK}
     success, failed = 0, []
     for name, url in platforms.items():
@@ -214,7 +216,7 @@ def scan_signals(tf, params):
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种", "方向", "入场", "止损", "止盈", "盈亏比", "触发时间", "收口确认"])
 
 # ================= 界面渲染 =================
-st.info(f"📡 当前监控池: **币安 USDT 永续合约 24H 成交量 Top {len(SYMBOLS)}** | 数据每 30 分钟自动更新")
+st.info(f"📡 当前监控池: **{len(SYMBOLS)} 个 USDT 永续合约** | {DATA_SOURCE}")
 
 if st.button("🔄 立即扫描信号", type="primary"):
     with st.spinner("策略计算中..."):
