@@ -5,6 +5,7 @@ import requests
 import time
 import json
 import os
+import traceback
 
 # ================= 配置区 =================
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
@@ -25,16 +26,30 @@ def load_cache():
     return {}
 
 def save_cache(data):
-    with open(CACHE_FILE, "w") as f: json.dump(data, f)
+    try:
+        with open(CACHE_FILE, "w") as f: json.dump(data, f)
+    except: pass
 
-cache = load_cache()
+# 初始化缓存
+if "cache_data" not in st.session_state:
+    st.session_state.cache_data = load_cache()
+
 # 清理1小时前的记录
 now = time.time()
-cache = {k: v for k, v in cache.items() if now - v < 3600}
-save_cache(cache)
+st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.items() if now - v < 3600}
+
+# ================= 全局 Exchange 实例 (优化性能) =================
+@st.cache_resource
+def get_exchange():
+    return ccxt.binance({
+        "options": {"defaultType": "swap"}, 
+        "enableRateLimit": True, 
+        "timeout": 15000,
+        "proxies": {} # 如有代理可在此配置
+    })
 
 # ================= 动态币种池 =================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800) # 30分钟缓存一次币种列表
 def get_top_futures_symbols(limit=100):
     fallback = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
@@ -63,13 +78,15 @@ def get_top_futures_symbols(limit=100):
         "ALICE/USDT:USDT"
     ]
     try:
-        ex = ccxt.binance({"options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 15000})
+        ex = get_exchange()
+        # 获取所有ticker可能会很慢，这里尝试只获取部分或者使用缓存
+        # 为了稳定性，如果超时则使用 fallback
         tickers = ex.fetch_tickers()
         valid = {k: v for k, v in tickers.items() if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0}
         sorted_p = sorted(valid.items(), key=lambda x: x[1]["quoteVolume"], reverse=True)
         return [p[0] for p in sorted_p[:limit]], "✅ Binance 实时排行"
     except Exception as e:
-        return fallback, f"⚠️ API降级 ({str(e)[:30]})"
+        return fallback, f"⚠️ API降级/使用默认列表 ({str(e)[:30]})"
 
 SYMBOLS, DATA_SRC = get_top_futures_symbols(100)
 
@@ -92,7 +109,6 @@ with st.sidebar.expander("📊 实时阈值", expanded=True):
     st.markdown(f"- **异动涨幅要求**: `>{cfg['pump_pct']*100:.0f}%`")
     st.markdown(f"- **异动量能要求**: `>{cfg['vol_mult']}x` 均量")
     st.markdown(f"- **趋势量能要求**: `>{cfg['trend_vol']}x` 均量")
-    st.caption("💡 阈值已按周期自动优化，避免过度过滤")
 
 # 🧪 推送自检模块
 st.sidebar.divider()
@@ -113,110 +129,138 @@ if st.sidebar.button("🧪 模拟推送测试", type="primary"):
     if ok: st.sidebar.success(f"✅ 成功 {ok} 个通道")
     if err: st.sidebar.error("❌ 失败:\n"+"\n".join(err))
 
-# 初始化防重复缓存
+# 初始化防重复缓存 Session State
 if "pushed_keys" not in st.session_state:
-    st.session_state.pushed_keys = set(cache.keys())
+    st.session_state.pushed_keys = set(st.session_state.cache_data.keys())
 
 # ================= 核心扫描函数 =================
-@st.cache_data(ttl=15)
 def get_ohlcv(sym, tf, limit=250):
     try:
-        ex = ccxt.binance({"options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 10000})
-        return pd.DataFrame(ex.fetch_ohlcv(sym, timeframe=tf, limit=limit), columns=["ts","o","h","l","c","v"])
-    except: return pd.DataFrame()
+        ex = get_exchange()
+        ohlcv = ex.fetch_ohlcv(sym, timeframe=tf, limit=limit)
+        if not ohlcv: return pd.DataFrame()
+        return pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
+    except Exception:
+        return pd.DataFrame()
 
 def send_push(text):
     webhooks = [w for w in [DINGTALK_WEBHOOK, WECOM_WEBHOOK] if w and "在此粘贴" not in w]
     for wh in webhooks:
-        try: requests.post(wh, json={"msgtype":"text","text":{"content":f"【Crypto-{tf}】\n{text}"}}, timeout=5)
+        try: 
+            requests.post(wh, json={"msgtype":"text","text":{"content":f"【Crypto-{tf}】\n{text}"}}, timeout=5)
         except: pass
 
 def scan(tf, t_cfg, trend_on, pump_on):
-    results, logs = [], {"total":0, "trend_pass":0, "pump_pass":0, "blocked":0}
-    progress = st.progress(0, text="扫描中...")
+    results = []
+    logs = {"total":0, "trend_pass":0, "pump_pass":0, "blocked":0}
     
-    for i, sym in enumerate(SYMBOLS):
-        progress.progress((i+1)/len(SYMBOLS), text=f"{i+1}/{len(SYMBOLS)} | {sym.split('/')[0]}")
-        df = get_ohlcv(sym, tf, 250)
-        if df.empty or len(df)<60: continue
-        logs["total"] += 1
-        
-        df["dt"] = pd.to_datetime(df["ts"], unit="ms")
-        df["EMA50"] = df["c"].ewm(50).mean()
-        df["EMA200"] = df["c"].ewm(200).mean()
-        
-        # MACD
-        e12, e26 = df["c"].ewm(12).mean(), df["c"].ewm(26).mean()
-        dif, dea = e12-e26, (e12-e26).ewm(9).mean()
-        df["MACD_H"] = 2*(dif-dea)
-        
-        # 量能 & 前高
-        df["Vol_MA"] = df["v"].rolling(20).mean()
-        df["HH20"] = df["h"].rolling(20).max().shift(1)
-        df["Change"] = df["c"].pct_change()
-        
-        df = df.dropna().iloc[-2:]
-        if len(df)<2: continue
-        
-        prev, last = df.iloc[0], df.iloc[1]
-        candle_ts = int(last["ts"])
-        sym_name = sym.split("/")[0]
-        
-        # 📈 趋势策略 (独立判断)
-        if trend_on:
-            key_t = f"T_{sym_name}_{tf}_{candle_ts}"
-            if key_t not in st.session_state.pushed_keys:
-                uptrend = last["c"]>last["EMA200"] and last["EMA50"]>last["EMA200"]
-                macd_cross = prev["MACD_H"]<0 and last["MACD_H"]>0
-                vol_ok = last["v"] > last["Vol_MA"] * t_cfg["trend_vol"]
+    # 使用 st.status 替代 progress，体验更好且不易卡死
+    with st.status(f"正在扫描 {len(SYMBOLS)} 个币种...", expanded=False) as status:
+        for i, sym in enumerate(SYMBOLS):
+            # 更新状态文本
+            if i % 10 == 0: # 每10个更新一次UI，减少开销
+                status.update(label=f"扫描进度: {i}/{len(SYMBOLS)} ({sym.split('/')[0]})")
+            
+            df = get_ohlcv(sym, tf, 250)
+            if df.empty or len(df) < 60: continue
+            
+            logs["total"] += 1
+            
+            try:
+                # 计算指标
+                df["dt"] = pd.to_datetime(df["ts"], unit="ms")
+                df["EMA50"] = df["c"].ewm(span=50, adjust=False).mean()
+                df["EMA200"] = df["c"].ewm(span=200, adjust=False).mean()
                 
-                if uptrend and macd_cross and vol_ok:
-                    sl = last["l"] - 1.5* (last["h"]-last["l"])
-                    tp = last["c"] + 2.0*(last["c"]-sl)
-                    msg = f"{sym_name} 🟢趋势多\n入:{last['c']:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                    results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":f"{last['c']:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
-                    st.session_state.pushed_keys.add(key_t)
-                    cache[key_t] = time.time()
-                    send_push(msg)
-                    logs["trend_pass"] += 1
-                    
-                elif not uptrend and prev["MACD_H"]>0 and last["MACD_H"]<0 and vol_ok:
-                    sl = last["h"] + 1.5*(last["h"]-last["l"])
-                    tp = last["c"] - 2.0*(sl-last["c"])
-                    msg = f"{sym_name} 🔴趋势空\n入:{last['c']:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                    results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🔴 空", "入场":f"{last['c']:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
-                    st.session_state.pushed_keys.add(key_t)
-                    cache[key_t] = time.time()
-                    send_push(msg)
-                    logs["trend_pass"] += 1
-
-        # 🚀 异动策略 (独立判断)
-        if pump_on:
-            key_p = f"P_{sym_name}_{tf}_{candle_ts}"
-            if key_p not in st.session_state.pushed_keys:
-                breakout = last["c"] > last["HH20"]
-                vol_surge = last["v"] > last["Vol_MA"] * t_cfg["vol_mult"]
-                pump_ok = last["Change"] > t_cfg["pump_pct"]
+                e12 = df["c"].ewm(span=12, adjust=False).mean()
+                e26 = df["c"].ewm(span=26, adjust=False).mean()
+                dif = e12 - e26
+                dea = dif.ewm(span=9, adjust=False).mean()
+                df["MACD_H"] = 2 * (dif - dea)
                 
-                if breakout and vol_surge and pump_ok:
-                    sl = last["l"] * 0.92
-                    tp = last["c"] * 1.15
-                    msg = f"{sym_name} 🚀异动突破\n现:{last['c']:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                    results.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":f"{last['c']:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
-                    st.session_state.pushed_keys.add(key_p)
-                    cache[key_p] = time.time()
-                    send_push(msg)
-                    logs["pump_pass"] += 1
+                df["Vol_MA"] = df["v"].rolling(20).mean()
+                df["HH20"] = df["h"].rolling(20).max().shift(1)
+                df["Change"] = df["c"].pct_change()
+                
+                # 去除NaN并取最后两根
+                df_clean = df.dropna().iloc[-2:]
+                if len(df_clean) < 2: continue
+                
+                prev, last = df_clean.iloc[0], df_clean.iloc[1]
+                candle_ts = int(last["ts"])
+                sym_name = sym.split("/")[0]
+                
+                # 📈 趋势策略
+                if trend_on:
+                    key_t = f"T_{sym_name}_{tf}_{candle_ts}"
+                    if key_t not in st.session_state.pushed_keys:
+                        # 确保数值类型
+                        c, ema50, ema200 = float(last["c"]), float(last["EMA50"]), float(last["EMA200"])
+                        macd_h_curr, macd_h_prev = float(last["MACD_H"]), float(prev["MACD_H"])
+                        vol_curr, vol_ma = float(last["v"]), float(last["Vol_MA"])
+                        h_curr, l_curr = float(last["h"]), float(last["l"])
+                        
+                        uptrend = c > ema200 and ema50 > ema200
+                        macd_cross = macd_h_prev < 0 and macd_h_curr > 0
+                        vol_ok = vol_curr > vol_ma * t_cfg["trend_vol"]
+                        
+                        if uptrend and macd_cross and vol_ok:
+                            sl = l_curr - 1.5 * (h_curr - l_curr)
+                            tp = c + 2.0 * (c - sl)
+                            msg = f"{sym_name} 🟢趋势多\n入:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
+                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            st.session_state.pushed_keys.add(key_t)
+                            st.session_state.cache_data[key_t] = time.time()
+                            send_push(msg)
+                            logs["trend_pass"] += 1
+                            
+                        elif not uptrend and macd_h_prev > 0 and macd_h_curr < 0 and vol_ok:
+                            sl = h_curr + 1.5 * (h_curr - l_curr)
+                            tp = c - 2.0 * (sl - c)
+                            msg = f"{sym_name} 🔴趋势空\n入:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
+                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🔴 空", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            st.session_state.pushed_keys.add(key_t)
+                            st.session_state.cache_data[key_t] = time.time()
+                            send_push(msg)
+                            logs["trend_pass"] += 1
 
-    progress.empty()
-    save_cache(cache)
+                # 🚀 异动策略
+                if pump_on:
+                    key_p = f"P_{sym_name}_{tf}_{candle_ts}"
+                    if key_p not in st.session_state.pushed_keys:
+                        c, hh20 = float(last["c"]), float(last["HH20"])
+                        vol_curr, vol_ma = float(last["v"]), float(last["Vol_MA"])
+                        change = float(last["Change"])
+                        l_curr = float(last["l"])
+                        
+                        breakout = c > hh20
+                        vol_surge = vol_curr > vol_ma * t_cfg["vol_mult"]
+                        pump_ok = change > t_cfg["pump_pct"]
+                        
+                        if breakout and vol_surge and pump_ok:
+                            sl = l_curr * 0.92
+                            tp = c * 1.15
+                            msg = f"{sym_name} 🚀异动突破\n现:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
+                            results.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            st.session_state.pushed_keys.add(key_p)
+                            st.session_state.cache_data[key_p] = time.time()
+                            send_push(msg)
+                            logs["pump_pass"] += 1
+            except Exception as e:
+                # 单个币种报错不中断整体
+                continue
+
+        status.update(label="扫描完成!", state="complete")
+    
+    # 保存缓存到文件
+    save_cache(st.session_state.cache_data)
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种","策略","方向","入场","止损","止盈","时间"]), logs
 
 # ================= 界面渲染 =================
 st.info(f"📡 监控池: {len(SYMBOLS)} 合约 | {DATA_SRC} | 状态: {'🟢 运行中' if (enable_trend or enable_pump) else '⚪ 策略已关闭'}")
 
-with st.spinner("🤖 扫描中..."):
-    df_sig, log_data = scan(tf, cfg, enable_trend, enable_pump)
+# 执行扫描
+df_sig, log_data = scan(tf, cfg, enable_trend, enable_pump)
 
 st.subheader("📡 信号看板")
 if df_sig.empty:
@@ -228,12 +272,17 @@ else:
     ), use_container_width=True, hide_index=True)
     st.success(f"📲 已推送 {len(df_sig)} 个信号至手机")
 
-# 🔍 调试日志（帮你排查为什么没信号）
+# 🔍 调试日志
 with st.expander("📊 本轮扫描诊断日志 (点击展开)", expanded=False):
     st.write(f"- 总检测币种: `{log_data['total']}`")
     st.write(f"- 趋势策略触发: `{log_data['trend_pass']}` 次")
     st.write(f"- 异动策略触发: `{log_data['pump_pass']}` 次")
-    st.write(f"- 防重复拦截: `{len(st.session_state.pushed_keys) - log_data['trend_pass'] - log_data['pump_pass']}` 次")
+    # 修正拦截计数逻辑
+    current_keys_count = len(st.session_state.pushed_keys)
+    # 简单的拦截估算
+    blocked_count = max(0, current_keys_count - log_data['trend_pass'] - log_data['pump_pass']) 
+    st.write(f"- 历史防重复记录总数: `{current_keys_count}`")
+    
     if log_data['total'] == 0:
         st.warning("⚠️ 未获取到任何K线数据，请检查网络或币安API状态")
     elif log_data['trend_pass'] == 0 and log_data['pump_pass'] == 0:
