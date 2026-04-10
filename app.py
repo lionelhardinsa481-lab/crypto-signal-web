@@ -4,6 +4,15 @@ import pandas as pd
 import requests
 import time
 
+# ================= 防误触保活（小白无需改动） =================
+try:
+    if st.query_params.get("keepalive") == "1":
+        st.text("✅ alive")
+        st.stop()
+except Exception:
+    pass
+# ============================================================
+
 # ================= 配置区 =================
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
@@ -13,10 +22,9 @@ st.set_page_config(page_title="Crypto 双策略信号监控", layout="wide", pag
 st.title("📊 币安合约 Top100 双策略信号监控")
 st.caption("🔥 波段回踩(高胜率) + 异动突破(抓直线拉升) | 独立开关 | 防重复推送 | 100币种全覆盖")
 
-# ================= 动态币种池 (扩容至100) =================
+# ================= 动态币种池 =================
 @st.cache_data(ttl=3600)
 def get_top_futures_symbols(limit=100):
-    # 精选100主流USDT永续合约（降级备用池，按流动性排序）
     fallback_symbols = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
         "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
@@ -275,4 +283,4 @@ if st.button("🔄 立即扫描信号", type="primary"):
     st.session_state.signaled_keys = {k for k in st.session_state.signaled_keys if current_ts - int(k.split("_")[-1]) < 3600000}
 
 st.divider()
-st.caption("⚠️ 风险提示：合约交易自带杠杆，异动策略波动极大，请严格设置硬止损。本工具仅为技术面辅助，不构成投资建议。Streamlit 云端有休眠机制，建议配合本地运行或自动刷新插件。")
+st.caption("⚠️ 风险提示：合约交易自带杠杆，异动策略波动极大，请严格设置硬止损。本工具仅为技术面辅助，不构成投资建议。")
