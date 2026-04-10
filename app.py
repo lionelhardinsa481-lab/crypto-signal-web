@@ -38,41 +38,32 @@ st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.item
 # ================= 智能交易所连接 =================
 @st.cache_resource
 def get_smart_exchange():
-    # 1. 尝试 OKX (优先 OKX，因为国内服务器连 OKX 通常比币安稳)
     try:
         ex_okx = ccxt.okx({
             "options": {"defaultType": "swap"}, 
             "enableRateLimit": True, 
             "timeout": 10000
         })
-        # 测试连接
         ex_okx.fetch_ticker("BTC/USDT:USDT")
         return ex_okx, "OKX (欧易)"
-    except Exception as e:
+    except Exception:
         pass 
         
-    # 2. 尝试币安备用线路
     try:
         ex_binance = ccxt.binance({
             "options": {"defaultType": "swap"}, 
             "enableRateLimit": True, 
             "timeout": 10000,
-            "urls": {
-                "api": {
-                    "public": "https://api.binance.vision",
-                    "private": "https://api.binance.vision"
-                }
-            }
+            "urls": {"api": {"public": "https://api.binance.vision", "private": "https://api.binance.vision"}}
         })
         ex_binance.fetch_ticker("BTC/USDT:USDT")
         return ex_binance, "Binance (备用线路)"
-    except Exception as e:
+    except Exception:
         return None, "连接失败"
 
 EXCHANGE, EXCHANGE_NAME = get_smart_exchange()
 
-# ================= 核心币种列表 (硬编码，确保 100% 有数据) =================
-# 直接使用这个列表，不再依赖不稳定的 API 获取
+# ================= 核心币种列表 =================
 CORE_SYMBOLS = [
     "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
     "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
@@ -101,7 +92,15 @@ CORE_SYMBOLS = [
 ]
 
 SYMBOLS = CORE_SYMBOLS
-DATA_SRC = "内置主流币种列表 (稳定版)"
+DATA_SRC = "内置主流币种列表"
+
+# ================= 辅助函数：智能格式化价格 =================
+def fmt_price(price):
+    """根据价格大小自动保留小数位，避免 0.04 这种无意义数据"""
+    if price < 0.01: return f"{price:.6f}"
+    if price < 1: return f"{price:.4f}"
+    if price < 100: return f"{price:.2f}"
+    return f"{price:.1f}"
 
 # ================= 侧边栏配置 =================
 st.sidebar.header("⚙️ 策略参数")
@@ -168,7 +167,7 @@ def scan(tf, t_cfg, trend_on, pump_on):
     if not EXCHANGE:
         return pd.DataFrame(), logs
 
-    with st.status(f"正在扫描 {len(SYMBOLS)} 个币种 (数据源: {EXCHANGE_NAME})...", expanded=False) as status:
+    with st.status(f"正在扫描 {len(SYMBOLS)} 个币种...", expanded=False) as status:
         for i, sym in enumerate(SYMBOLS):
             if i % 10 == 0: 
                 status.update(label=f"扫描进度: {i}/{len(SYMBOLS)} ({sym.split('/')[0]})")
@@ -200,14 +199,20 @@ def scan(tf, t_cfg, trend_on, pump_on):
                 candle_ts = int(last["ts"])
                 sym_name = sym.split("/")[0]
                 
+                c, h_curr, l_curr = float(last["c"]), float(last["h"]), float(last["l"])
+                
+                #  新增过滤：如果 K 线波动太小（高低点差值小于价格的 0.5%），直接跳过，避免推送垃圾信号
+                volatility = (h_curr - l_curr) / c
+                if volatility < 0.005: 
+                    continue
+
                 # 📈 趋势策略
                 if trend_on:
                     key_t = f"T_{sym_name}_{tf}_{candle_ts}"
                     if key_t not in st.session_state.pushed_keys:
-                        c, ema50, ema200 = float(last["c"]), float(last["EMA50"]), float(last["EMA200"])
+                        ema50, ema200 = float(last["EMA50"]), float(last["EMA200"])
                         macd_h_curr, macd_h_prev = float(last["MACD_H"]), float(prev["MACD_H"])
                         vol_curr, vol_ma = float(last["v"]), float(last["Vol_MA"])
-                        h_curr, l_curr = float(last["h"]), float(last["l"])
                         
                         uptrend = c > ema200 and ema50 > ema200
                         macd_cross = macd_h_prev < 0 and macd_h_curr > 0
@@ -216,8 +221,10 @@ def scan(tf, t_cfg, trend_on, pump_on):
                         if uptrend and macd_cross and vol_ok:
                             sl = l_curr - 1.5 * (h_curr - l_curr)
                             tp = c + 2.0 * (c - sl)
-                            msg = f"{sym_name} 🟢趋势多\n入:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            
+                            # 使用智能格式化
+                            msg = f"{sym_name} 🟢趋势多\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_t)
                             st.session_state.cache_data[key_t] = time.time()
                             send_push(msg)
@@ -226,8 +233,9 @@ def scan(tf, t_cfg, trend_on, pump_on):
                         elif not uptrend and macd_h_prev > 0 and macd_h_curr < 0 and vol_ok:
                             sl = h_curr + 1.5 * (h_curr - l_curr)
                             tp = c - 2.0 * (sl - c)
-                            msg = f"{sym_name} 🔴趋势空\n入:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🔴 空", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            
+                            msg = f"{sym_name} 🔴趋势空\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🔴 空", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_t)
                             st.session_state.cache_data[key_t] = time.time()
                             send_push(msg)
@@ -237,10 +245,9 @@ def scan(tf, t_cfg, trend_on, pump_on):
                 if pump_on:
                     key_p = f"P_{sym_name}_{tf}_{candle_ts}"
                     if key_p not in st.session_state.pushed_keys:
-                        c, hh20 = float(last["c"]), float(last["HH20"])
+                        hh20 = float(last["HH20"])
                         vol_curr, vol_ma = float(last["v"]), float(last["Vol_MA"])
                         change = float(last["Change"])
-                        l_curr = float(last["l"])
                         
                         breakout = c > hh20
                         vol_surge = vol_curr > vol_ma * t_cfg["vol_mult"]
@@ -249,8 +256,9 @@ def scan(tf, t_cfg, trend_on, pump_on):
                         if breakout and vol_surge and pump_ok:
                             sl = l_curr * 0.92
                             tp = c * 1.15
-                            msg = f"{sym_name} 🚀异动突破\n现:{c:.2f} 损:{sl:.2f} 盈:{tp:.2f}"
-                            results.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":f"{c:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "时间":str(last['dt'])})
+                            
+                            msg = f"{sym_name} 🚀异动突破\n现:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            results.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_p)
                             st.session_state.cache_data[key_p] = time.time()
                             send_push(msg)
@@ -273,10 +281,22 @@ if EXCHANGE:
     if df_sig.empty:
         st.info("✅ 本轮无信号。系统已自动过滤低质量形态。")
     else:
-        st.dataframe(df_sig.style.applymap(
-            lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
-            subset=["方向"]
-        ), use_container_width=True, hide_index=True)
+        try:
+            styled_df = df_sig.style.map(
+                lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
+                subset=["方向"]
+            )
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        except AttributeError:
+            try:
+                styled_df = df_sig.style.applymap(
+                    lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
+                    subset=["方向"]
+                )
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            except:
+                st.dataframe(df_sig, use_container_width=True, hide_index=True)
+        
         st.success(f"📲 已推送 {len(df_sig)} 个信号至手机")
 
     with st.expander("📊 本轮扫描诊断日志 (点击展开)", expanded=False):
@@ -284,13 +304,8 @@ if EXCHANGE:
         st.write(f"- 总检测币种: `{log_data['total']}`")
         st.write(f"- 趋势策略触发: `{log_data['trend_pass']}` 次")
         st.write(f"- 异动策略触发: `{log_data['pump_pass']}` 次")
-        
-        if log_data['total'] == 0:
-            st.warning("⚠️ 未获取到任何K线数据，请检查网络")
-        elif log_data['trend_pass'] == 0 and log_data['pump_pass'] == 0:
-            st.info("💡 当前市场处于震荡/无突破状态。")
 else:
-    st.error("❌ 无法连接任何交易所，请检查网络环境。")
+    st.error("❌ 无法连接任何交易所")
 
 st.divider()
 st.caption("⚠️ 风险提示：合约杠杆交易风险极高，本工具仅为技术面辅助。请严格设置止损，切勿重仓扛单。")
