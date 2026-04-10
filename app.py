@@ -5,12 +5,11 @@ import requests
 import time
 import json
 import os
-import traceback
 
 # ================= 配置区 =================
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
-CACHE_FILE = "/tmp/signal_cache.json"
+CACHE_FILE = "/tmp/signal_cache.json" 
 # ==========================================
 
 st.set_page_config(page_title="Crypto 实战信号监控", layout="wide", page_icon="📈")
@@ -59,7 +58,7 @@ def get_smart_exchange():
         ex_binance.fetch_ticker("BTC/USDT:USDT")
         return ex_binance, "Binance (备用线路)"
     except Exception as e:
-        st.warning(f"⚠️ 币安线路连接失败 ({str(e)[:30]})，正在自动切换 OKX 线路...")
+        pass 
         
     # 2. 尝试 OKX (欧易)
     try:
@@ -71,14 +70,14 @@ def get_smart_exchange():
         ex_okx.fetch_ticker("BTC/USDT:USDT")
         return ex_okx, "OKX (欧易)"
     except Exception as e:
-        st.error(f"❌ OKX 线路也连接失败: {str(e)}")
         return None, "连接失败"
 
 EXCHANGE, EXCHANGE_NAME = get_smart_exchange()
 
-# ================= 动态币种池 (已修复缓存报错) =================
+# ================= 动态币种池 =================
+# 修复点：去掉了 EXCHANGE 对象参数，改为在函数内部直接使用全局变量 EXCHANGE
 @st.cache_data(ttl=1800)
-def get_top_futures_symbols(_exchange_inst, ex_name, limit=100):
+def get_top_futures_symbols(ex_name, limit=100):
     # 硬编码 fallback 列表 (主流币种)
     fallback = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
@@ -107,11 +106,12 @@ def get_top_futures_symbols(_exchange_inst, ex_name, limit=100):
         "ALICE/USDT:USDT"
     ]
     
-    if _exchange_inst is None:
+    if EXCHANGE is None:
         return fallback, f"⚠️ 无法连接交易所，使用默认列表"
 
     try:
-        tickers = _exchange_inst.fetch_tickers()
+        # 直接使用全局 EXCHANGE 对象
+        tickers = EXCHANGE.fetch_tickers()
         # 过滤 USDT 合约，且成交量大于 0
         valid = {k: v for k, v in tickers.items() if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0}
         # 按成交额排序
@@ -121,7 +121,8 @@ def get_top_futures_symbols(_exchange_inst, ex_name, limit=100):
         return fallback, f"⚠️ API获取失败，使用默认列表 ({str(e)[:30]})"
 
 if EXCHANGE:
-    SYMBOLS, DATA_SRC = get_top_futures_symbols(EXCHANGE, EXCHANGE_NAME, 100)
+    # 修复点：只传递字符串参数 EXCHANGE_NAME，不传对象
+    SYMBOLS, DATA_SRC = get_top_futures_symbols(EXCHANGE_NAME, 100)
 else:
     SYMBOLS, DATA_SRC = [], "无连接"
 
@@ -169,7 +170,7 @@ if "pushed_keys" not in st.session_state:
 # ================= 核心扫描函数 =================
 def get_ohlcv(sym, tf, limit=250):
     try:
-        # 使用全局 Exchange 实例
+        # 使用全局 EXCHANGE
         ohlcv = EXCHANGE.fetch_ohlcv(sym, timeframe=tf, limit=limit)
         if not ohlcv: return pd.DataFrame()
         return pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
@@ -280,7 +281,7 @@ def scan(tf, t_cfg, trend_on, pump_on):
             except Exception:
                 continue
 
-    status.update(label="扫描完成!", state="complete")
+        status.update(label="扫描完成!", state="complete")
     
     save_cache(st.session_state.cache_data)
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种","策略","方向","入场","止损","止盈","时间"]), logs
@@ -295,9 +296,7 @@ if EXCHANGE:
     if df_sig.empty:
         st.info("✅ 本轮无信号。系统已自动过滤低质量形态。")
     else:
-        # 兼容处理 Pandas 新老版本的 applymap/map
-        style_method = df_sig.style.map if hasattr(df_sig.style, 'map') else df_sig.style.applymap
-        st.dataframe(style_method(
+        st.dataframe(df_sig.style.applymap(
             lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
             subset=["方向"]
         ), use_container_width=True, hide_index=True)
