@@ -12,7 +12,7 @@ SYMBOLS = [
     "UNI/USDT", "ATOM/USDT", "ETC/USDT", "FIL/USDT", "AAVE/USDT"
 ]
 
-DINGTALK_WEBHOOK = "在此粘贴你的钉钉 Webhook"
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 # ==========================================
 
