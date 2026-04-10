@@ -4,15 +4,6 @@ import pandas as pd
 import requests
 import time
 
-# ================= 防误触保活（小白无需改动） =================
-try:
-    if st.query_params.get("keepalive") == "1":
-        st.text("✅ alive")
-        st.stop()
-except Exception:
-    pass
-# ============================================================
-
 # ================= 配置区 =================
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
@@ -20,7 +11,7 @@ WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 
 st.set_page_config(page_title="Crypto 双策略信号监控", layout="wide", page_icon="📈")
 st.title("📊 币安合约 Top100 双策略信号监控")
-st.caption("🔥 波段回踩(高胜率) + 异动突破(抓直线拉升) | 独立开关 | 防重复推送 | 100币种全覆盖")
+st.caption("🔥 云端自动扫描 | 波段回踩+异动突破 | 防重复推送 | 100币种全覆盖")
 
 # ================= 动态币种池 =================
 @st.cache_data(ttl=3600)
@@ -112,7 +103,7 @@ with st.sidebar.expander("📊 当前生效阈值", expanded=True):
         st.success("🔥 **异动策略已开启**")
         st.caption("- 单K涨幅 > 10%\n- 成交量 > 4倍均量\n- 突破20周期最高价\n- 过滤低流动性(<50万U)")
     st.caption(f"🌐 数据源: {DATA_SOURCE}")
-    st.warning(f"⏱️ 扫描 {len(SYMBOLS)} 个币种约需 25~40 秒，请耐心等待进度条完成。")
+    st.info("🤖 云端模式：UptimeRobot 每5分钟访问网页即自动扫描，无需人工点击。")
 
 # 🤖 机器人测试模块
 st.sidebar.divider()
@@ -166,7 +157,7 @@ def send_push(text):
 
 def scan_signals(tf, params, enable_pump=False):
     results = []
-    progress_bar = st.progress(0, text="正在扫描合约市场...")
+    progress_bar = st.progress(0, text=" 云端自动扫描中...")
 
     for i, sym in enumerate(SYMBOLS):
         progress_bar.progress((i + 1) / len(SYMBOLS), text=f"扫描: {i+1}/{len(SYMBOLS)} | {sym.replace('/USDT:USDT', '')}")
@@ -261,26 +252,26 @@ def scan_signals(tf, params, enable_pump=False):
     cols = ["币种", "策略", "方向", "入场", "止损", "止盈", "盈亏比", "触发时间"]
     return pd.DataFrame(results) if results else pd.DataFrame(columns=cols)
 
-# ================= 界面渲染 =================
+# ================= 🚀 云端自动扫描（开机/关机均可运行） =================
 st.info(f"📡 监控池: **{len(SYMBOLS)} 个 USDT 永续合约** | {DATA_SOURCE} | 异动策略: {' 已开启' if enable_pump else '⚪ 已关闭'}")
 
-if st.button("🔄 立即扫描信号", type="primary"):
-    with st.spinner("双策略计算中..."):
-        df_sig = scan_signals(timeframe, cfg, enable_pump)
+with st.spinner("🤖 云端自动扫描中，请稍候..."):
+    df_sig = scan_signals(timeframe, cfg, enable_pump)
 
-    st.subheader(f"📡 {timeframe} 信号看板")
-    if df_sig.empty:
-        st.info("✅ 当前无符合策略条件的信号。系统已自动过滤低质量形态与震荡行情。")
-    else:
-        def color_style(val):
-            if "多" in str(val) or "突破" in str(val): return "color: #00C853; font-weight: bold"
-            if "空" in str(val): return "color: #FF1744; font-weight: bold"
-            return ""
-        st.dataframe(df_sig.style.applymap(color_style, subset=["方向"]), use_container_width=True, hide_index=True)
-        st.success(f"已发现 {len(df_sig)} 个信号，推送已发送至您的手机！")
+st.subheader(f"📡 {timeframe} 信号看板")
+if df_sig.empty:
+    st.info("✅ 当前无符合策略条件的信号。系统已自动过滤低质量形态与震荡行情。")
+else:
+    def color_style(val):
+        if "多" in str(val) or "突破" in str(val): return "color: #00C853; font-weight: bold"
+        if "空" in str(val): return "color: #FF1744; font-weight: bold"
+        return ""
+    st.dataframe(df_sig.style.applymap(color_style, subset=["方向"]), use_container_width=True, hide_index=True)
+    st.success(f"已发现 {len(df_sig)} 个信号，推送已发送至您的手机！")
 
-    current_ts = int(time.time() * 1000)
-    st.session_state.signaled_keys = {k for k in st.session_state.signaled_keys if current_ts - int(k.split("_")[-1]) < 3600000}
+# 每小时清理一次过期记录
+current_ts = int(time.time() * 1000)
+st.session_state.signaled_keys = {k for k in st.session_state.signaled_keys if current_ts - int(k.split("_")[-1]) < 3600000}
 
 st.divider()
 st.caption("⚠️ 风险提示：合约交易自带杠杆，异动策略波动极大，请严格设置硬止损。本工具仅为技术面辅助，不构成投资建议。")
