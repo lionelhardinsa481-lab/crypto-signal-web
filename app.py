@@ -10,12 +10,12 @@ import traceback
 # ================= 配置区 =================
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
-CACHE_FILE = "/tmp/signal_cache.json"  # 云端持久化去重文件
+CACHE_FILE = "/tmp/signal_cache.json" 
 # ==========================================
 
 st.set_page_config(page_title="Crypto 实战信号监控", layout="wide", page_icon="📈")
-st.title("📊 币安合约 Top100 实战信号监控")
-st.caption("🔥 实盘优化版 | 独立双策略 | 云端防重复 | 带自检日志")
+st.title("📊 币安/OKX 合约 Top100 实战信号监控")
+st.caption("🔥 自动优选线路 | 独立双策略 | 云端防重复 | 带自检日志")
 
 # ================= 持久化去重模块 =================
 def load_cache():
@@ -30,27 +30,56 @@ def save_cache(data):
         with open(CACHE_FILE, "w") as f: json.dump(data, f)
     except: pass
 
-# 初始化缓存
 if "cache_data" not in st.session_state:
     st.session_state.cache_data = load_cache()
 
-# 清理1小时前的记录
 now = time.time()
 st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.items() if now - v < 3600}
 
-# ================= 全局 Exchange 实例 (优化性能) =================
+# ================= 智能交易所连接 (核心修复) =================
 @st.cache_resource
-def get_exchange():
-    return ccxt.binance({
-        "options": {"defaultType": "swap"}, 
-        "enableRateLimit": True, 
-        "timeout": 15000,
-        "proxies": {} # 如有代理可在此配置
-    })
+def get_smart_exchange():
+    """
+    自动尝试连接币安备用线路，如果失败则切换 OKX
+    """
+    # 1. 尝试币安 (使用官方备用域名 api.binance.vision 防封禁)
+    try:
+        ex_binance = ccxt.binance({
+            "options": {"defaultType": "swap"}, 
+            "enableRateLimit": True, 
+            "timeout": 10000,
+            "urls": {
+                "api": {
+                    "public": "https://api.binance.vision",
+                    "private": "https://api.binance.vision"
+                }
+            }
+        })
+        # 简单测试一下能否获取 ticker
+        ex_binance.fetch_ticker("BTC/USDT:USDT")
+        return ex_binance, "Binance (备用线路)"
+    except Exception as e:
+        st.warning(f"⚠️ 币安线路连接失败 ({str(e)[:30]})，正在自动切换 OKX 线路...")
+        
+    # 2. 尝试 OKX (欧易)
+    try:
+        ex_okx = ccxt.okx({
+            "options": {"defaultType": "swap"}, 
+            "enableRateLimit": True, 
+            "timeout": 10000
+        })
+        ex_okx.fetch_ticker("BTC/USDT:USDT")
+        return ex_okx, "OKX (欧易)"
+    except Exception as e:
+        st.error(f"❌ OKX 线路也连接失败: {str(e)}")
+        return None, "连接失败"
+
+EXCHANGE, EXCHANGE_NAME = get_smart_exchange()
 
 # ================= 动态币种池 =================
-@st.cache_data(ttl=1800) # 30分钟缓存一次币种列表
-def get_top_futures_symbols(limit=100):
+@st.cache_data(ttl=1800)
+def get_top_futures_symbols(exchange_inst, ex_name, limit=100):
+    # 硬编码 fallback 列表 (主流币种)
     fallback = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
         "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
@@ -77,18 +106,24 @@ def get_top_futures_symbols(limit=100):
         "DYDX/USDT:USDT", "GMX/USDT:USDT", "API3/USDT:USDT", "COTI/USDT:USDT", "HBAR/USDT:USDT",
         "ALICE/USDT:USDT"
     ]
-    try:
-        ex = get_exchange()
-        # 获取所有ticker可能会很慢，这里尝试只获取部分或者使用缓存
-        # 为了稳定性，如果超时则使用 fallback
-        tickers = ex.fetch_tickers()
-        valid = {k: v for k, v in tickers.items() if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0}
-        sorted_p = sorted(valid.items(), key=lambda x: x[1]["quoteVolume"], reverse=True)
-        return [p[0] for p in sorted_p[:limit]], "✅ Binance 实时排行"
-    except Exception as e:
-        return fallback, f"⚠️ API降级/使用默认列表 ({str(e)[:30]})"
+    
+    if exchange_inst is None:
+        return fallback, f"⚠️ 无法连接交易所，使用默认列表"
 
-SYMBOLS, DATA_SRC = get_top_futures_symbols(100)
+    try:
+        tickers = exchange_inst.fetch_tickers()
+        # 过滤 USDT 合约，且成交量大于 0
+        valid = {k: v for k, v in tickers.items() if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0}
+        # 按成交额排序
+        sorted_p = sorted(valid.items(), key=lambda x: x[1]["quoteVolume"], reverse=True)
+        return [p[0] for p in sorted_p[:limit]], f"✅ {ex_name} 实时排行"
+    except Exception as e:
+        return fallback, f"⚠️ API获取失败，使用默认列表 ({str(e)[:30]})"
+
+if EXCHANGE:
+    SYMBOLS, DATA_SRC = get_top_futures_symbols(EXCHANGE, EXCHANGE_NAME, 100)
+else:
+    SYMBOLS, DATA_SRC = [], "无连接"
 
 # ================= 侧边栏配置 =================
 st.sidebar.header("⚙️ 策略参数")
@@ -96,7 +131,6 @@ tf = st.sidebar.selectbox("🕰️ K线周期", ["5m", "15m", "1h", "4h"], index
 enable_trend = st.sidebar.checkbox("📈 启用趋势策略", value=True)
 enable_pump = st.sidebar.checkbox("🚀 启用异动策略", value=True)
 
-# 动态阈值（按周期自适应）
 TF_THRESHOLDS = {
     "5m": {"pump_pct": 0.03, "vol_mult": 3.0, "trend_vol": 1.5},
     "15m": {"pump_pct": 0.04, "vol_mult": 2.5, "trend_vol": 1.5},
@@ -110,11 +144,11 @@ with st.sidebar.expander("📊 实时阈值", expanded=True):
     st.markdown(f"- **异动量能要求**: `>{cfg['vol_mult']}x` 均量")
     st.markdown(f"- **趋势量能要求**: `>{cfg['trend_vol']}x` 均量")
 
-# 🧪 推送自检模块
+# 🧪 推送自检
 st.sidebar.divider()
 st.sidebar.subheader("🔍 通道自检")
 if st.sidebar.button("🧪 模拟推送测试", type="primary"):
-    test_msg = f"【通道正常】Crypto监控已激活\n周期:{tf} | 监控:{len(SYMBOLS)}币种\n时间:{time.strftime('%H:%M:%S')}"
+    test_msg = f"【通道正常】Crypto监控已激活\n交易所:{EXCHANGE_NAME}\n周期:{tf} | 监控:{len(SYMBOLS)}币种\n时间:{time.strftime('%H:%M:%S')}"
     ok, err = 0, []
     for name, url in [("钉钉", DINGTALK_WEBHOOK), ("企微", WECOM_WEBHOOK)]:
         if "在此粘贴" in url or not url:
@@ -129,15 +163,14 @@ if st.sidebar.button("🧪 模拟推送测试", type="primary"):
     if ok: st.sidebar.success(f"✅ 成功 {ok} 个通道")
     if err: st.sidebar.error("❌ 失败:\n"+"\n".join(err))
 
-# 初始化防重复缓存 Session State
 if "pushed_keys" not in st.session_state:
     st.session_state.pushed_keys = set(st.session_state.cache_data.keys())
 
 # ================= 核心扫描函数 =================
 def get_ohlcv(sym, tf, limit=250):
     try:
-        ex = get_exchange()
-        ohlcv = ex.fetch_ohlcv(sym, timeframe=tf, limit=limit)
+        # 使用全局 Exchange 实例
+        ohlcv = EXCHANGE.fetch_ohlcv(sym, timeframe=tf, limit=limit)
         if not ohlcv: return pd.DataFrame()
         return pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
     except Exception:
@@ -152,13 +185,14 @@ def send_push(text):
 
 def scan(tf, t_cfg, trend_on, pump_on):
     results = []
-    logs = {"total":0, "trend_pass":0, "pump_pass":0, "blocked":0}
+    logs = {"total":0, "trend_pass":0, "pump_pass":0}
     
-    # 使用 st.status 替代 progress，体验更好且不易卡死
-    with st.status(f"正在扫描 {len(SYMBOLS)} 个币种...", expanded=False) as status:
+    if not EXCHANGE:
+        return pd.DataFrame(), logs
+
+    with st.status(f"正在扫描 {len(SYMBOLS)} 个币种 (数据源: {EXCHANGE_NAME})...", expanded=False) as status:
         for i, sym in enumerate(SYMBOLS):
-            # 更新状态文本
-            if i % 10 == 0: # 每10个更新一次UI，减少开销
+            if i % 10 == 0: 
                 status.update(label=f"扫描进度: {i}/{len(SYMBOLS)} ({sym.split('/')[0]})")
             
             df = get_ohlcv(sym, tf, 250)
@@ -167,7 +201,6 @@ def scan(tf, t_cfg, trend_on, pump_on):
             logs["total"] += 1
             
             try:
-                # 计算指标
                 df["dt"] = pd.to_datetime(df["ts"], unit="ms")
                 df["EMA50"] = df["c"].ewm(span=50, adjust=False).mean()
                 df["EMA200"] = df["c"].ewm(span=200, adjust=False).mean()
@@ -182,7 +215,6 @@ def scan(tf, t_cfg, trend_on, pump_on):
                 df["HH20"] = df["h"].rolling(20).max().shift(1)
                 df["Change"] = df["c"].pct_change()
                 
-                # 去除NaN并取最后两根
                 df_clean = df.dropna().iloc[-2:]
                 if len(df_clean) < 2: continue
                 
@@ -194,7 +226,6 @@ def scan(tf, t_cfg, trend_on, pump_on):
                 if trend_on:
                     key_t = f"T_{sym_name}_{tf}_{candle_ts}"
                     if key_t not in st.session_state.pushed_keys:
-                        # 确保数值类型
                         c, ema50, ema200 = float(last["c"]), float(last["EMA50"]), float(last["EMA200"])
                         macd_h_curr, macd_h_prev = float(last["MACD_H"]), float(prev["MACD_H"])
                         vol_curr, vol_ma = float(last["v"]), float(last["Vol_MA"])
@@ -246,47 +277,42 @@ def scan(tf, t_cfg, trend_on, pump_on):
                             st.session_state.cache_data[key_p] = time.time()
                             send_push(msg)
                             logs["pump_pass"] += 1
-            except Exception as e:
-                # 单个币种报错不中断整体
+            except Exception:
                 continue
 
         status.update(label="扫描完成!", state="complete")
     
-    # 保存缓存到文件
     save_cache(st.session_state.cache_data)
     return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种","策略","方向","入场","止损","止盈","时间"]), logs
 
 # ================= 界面渲染 =================
-st.info(f"📡 监控池: {len(SYMBOLS)} 合约 | {DATA_SRC} | 状态: {'🟢 运行中' if (enable_trend or enable_pump) else '⚪ 策略已关闭'}")
-
-# 执行扫描
-df_sig, log_data = scan(tf, cfg, enable_trend, enable_pump)
-
-st.subheader("📡 信号看板")
-if df_sig.empty:
-    st.info("✅ 本轮无信号。系统已自动过滤低质量形态。")
-else:
-    st.dataframe(df_sig.style.applymap(
-        lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
-        subset=["方向"]
-    ), use_container_width=True, hide_index=True)
-    st.success(f"📲 已推送 {len(df_sig)} 个信号至手机")
-
-# 🔍 调试日志
-with st.expander("📊 本轮扫描诊断日志 (点击展开)", expanded=False):
-    st.write(f"- 总检测币种: `{log_data['total']}`")
-    st.write(f"- 趋势策略触发: `{log_data['trend_pass']}` 次")
-    st.write(f"- 异动策略触发: `{log_data['pump_pass']}` 次")
-    # 修正拦截计数逻辑
-    current_keys_count = len(st.session_state.pushed_keys)
-    # 简单的拦截估算
-    blocked_count = max(0, current_keys_count - log_data['trend_pass'] - log_data['pump_pass']) 
-    st.write(f"- 历史防重复记录总数: `{current_keys_count}`")
+if EXCHANGE:
+    st.info(f"📡 监控池: {len(SYMBOLS)} 合约 | 数据源: {EXCHANGE_NAME} | 状态: 🟢 运行中")
     
-    if log_data['total'] == 0:
-        st.warning("⚠️ 未获取到任何K线数据，请检查网络或币安API状态")
-    elif log_data['trend_pass'] == 0 and log_data['pump_pass'] == 0:
-        st.info("💡 当前市场处于震荡/无突破状态，符合过滤逻辑。建议切至 5m/15m 周期提高频率。")
+    df_sig, log_data = scan(tf, cfg, enable_trend, enable_pump)
+
+    st.subheader("📡 信号看板")
+    if df_sig.empty:
+        st.info("✅ 本轮无信号。系统已自动过滤低质量形态。")
+    else:
+        st.dataframe(df_sig.style.applymap(
+            lambda v: "color:#00C853;font-weight:bold" if "多" in str(v) or "突破" in str(v) else ("color:#FF1744;font-weight:bold" if "空" in str(v) else ""),
+            subset=["方向"]
+        ), use_container_width=True, hide_index=True)
+        st.success(f"📲 已推送 {len(df_sig)} 个信号至手机")
+
+    with st.expander("📊 本轮扫描诊断日志 (点击展开)", expanded=False):
+        st.write(f"- 数据源: `{EXCHANGE_NAME}`")
+        st.write(f"- 总检测币种: `{log_data['total']}`")
+        st.write(f"- 趋势策略触发: `{log_data['trend_pass']}` 次")
+        st.write(f"- 异动策略触发: `{log_data['pump_pass']}` 次")
+        
+        if log_data['total'] == 0:
+            st.warning("⚠️ 未获取到任何K线数据，请检查网络")
+        elif log_data['trend_pass'] == 0 and log_data['pump_pass'] == 0:
+            st.info("💡 当前市场处于震荡/无突破状态。")
+else:
+    st.error("❌ 无法连接任何交易所，请检查网络环境。")
 
 st.divider()
 st.caption("⚠️ 风险提示：合约杠杆交易风险极高，本工具仅为技术面辅助。请严格设置止损，切勿重仓扛单。")
