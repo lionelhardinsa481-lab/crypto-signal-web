@@ -9,7 +9,7 @@ SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     "DOGE/USDT", "ADA/USDT", "TRX/USDT", "AVAX/USDT", "LINK/USDT",
     "TON/USDT", "DOT/USDT", "MATIC/USDT", "SHIB/USDT", "LTC/USDT",
-    "UNI/USDT", "ATOM/USTS", "ETC/USDT", "FIL/USDT", "AAVE/USDT"
+    "UNI/USDT", "ATOM/USDT", "ETC/USDT", "FIL/USDT", "AAVE/USDT"
 ]
 
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
@@ -30,7 +30,7 @@ mode = st.sidebar.radio(
     index=1
 )
 
-# 参数映射表 (核心：用严格度控制胜率预期，新增布林带收口阈值)
+# 参数映射表
 MODE_PARAMS = {
     "🚀 激进模式 (高频/宽过滤)": {
         "vol_mult": 1.0, "rsi_long_max": 75, "rsi_short_min": 25,
@@ -50,15 +50,41 @@ MODE_PARAMS = {
 }
 cfg = MODE_PARAMS[mode]
 
-# 显示当前生效参数
 with st.sidebar.expander("📊 当前生效阈值", expanded=True):
     st.markdown(f"- **成交量要求**: > 20均量 `{cfg['vol_mult']}x`")
     st.markdown(f"- **RSI过滤**: 做多 `<{cfg['rsi_long_max']}` / 做空 `>{cfg['rsi_short_min']}`")
     st.markdown(f"- **EMA回踩**: `{'不强制' if not cfg['req_pullback'] else f'±{cfg['pullback_tol']*100:.1f}%'}`")
     st.markdown(f"- **布林收口**: `{'关闭' if not cfg['req_squeeze'] else f'带宽 < 近20周期极值×{cfg['squeeze_tol']}'}`")
     st.info(f"📈 预期胜率区间: {cfg['expected_wr']}")
-    st.caption("💡 收口逻辑：波动率极度收缩后，配合趋势突破往往引发单边行情。保守模式要求收口更极致。")
-    st.warning("⚠️ 胜率基于历史统计，实盘请严格风控。短周期噪音大，建议搭配 1:2 以上盈亏比。")
+    st.caption("💡 收口逻辑：波动率极度收缩后，配合趋势突破往往引发单边行情。")
+    st.warning("⚠️ 胜率基于历史统计，实盘请严格风控。")
+
+# 🤖 机器人测试模块
+st.sidebar.divider()
+st.sidebar.subheader("📡 推送通道测试")
+if st.sidebar.button("📤 一键测试推送", type="primary"):
+    test_msg = f"【系统测试】Crypto信号监控机器人已就绪！✅\n当前周期: {timeframe}\n当前模式: {mode.split(' ')[0]}\n测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    platforms = {"钉钉": DINGTALK_WEBHOOK, "企微": WECOM_WEBHOOK}
+    success, failed = 0, []
+    
+    for name, url in platforms.items():
+        if not url or "在此粘贴" in url:
+            failed.append(f"{name}: 未配置 Webhook")
+            continue
+        try:
+            resp = requests.post(url, json={"msgtype": "text", "text": {"content": test_msg}}, timeout=6)
+            data = resp.json()
+            if resp.status_code == 200 and data.get("errcode", -1) == 0:
+                success += 1
+            else:
+                failed.append(f"{name}: API返回错误 {data.get('errcode','')}")
+        except Exception as e:
+            failed.append(f"{name}: 网络请求失败 ({str(e)[:30]}...")
+            
+    if success > 0:
+        st.sidebar.success(f"✅ 测试成功！已送达 {success} 个平台")
+    if failed:
+        st.sidebar.error("❌ 部分通道异常:\n" + "\n".join(failed))
 
 # 初始化防重复状态
 if "signaled_keys" not in st.session_state:
@@ -89,77 +115,51 @@ def scan_signals(tf, params):
         if df.empty or len(df) < 60: continue
 
         df["dt"] = pd.to_datetime(df["ts"], unit="ms")
-        
-        # 1. 趋势指标
         df["EMA50"] = df["c"].ewm(span=50, adjust=False).mean()
         df["EMA200"] = df["c"].ewm(span=200, adjust=False).mean()
         
-        # 2. MACD
         ema12 = df["c"].ewm(span=12, adjust=False).mean()
         ema26 = df["c"].ewm(span=26, adjust=False).mean()
         dif = ema12 - ema26
         dea = dif.ewm(span=9, adjust=False).mean()
         df["MACD_H"] = 2 * (dif - dea)
         
-        # 3. RSI
         delta = df["c"].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
         rs = gain.rolling(14).mean() / loss.rolling(14).mean()
         df["RSI"] = 100 - (100 / (1 + rs))
         
-        # 4. ATR & 成交量均值
         tr = pd.concat([df["h"]-df["l"], (df["h"]-df["c"].shift(1)).abs(), (df["l"]-df["c"].shift(1)).abs()], axis=1).max(axis=1)
         df["ATR"] = tr.rolling(14).mean()
         df["Vol_MA"] = df["v"].rolling(20).mean()
         
-        # 5. 🌟 布林带收口计算
         df["MB"] = df["c"].rolling(20).mean()
         df["STD"] = df["c"].rolling(20).std()
         df["UPPER"] = df["MB"] + 2 * df["STD"]
         df["LOWER"] = df["MB"] - 2 * df["STD"]
         df["BB_WIDTH"] = (df["UPPER"] - df["LOWER"]) / df["MB"]
-        # 使用 shift(1) 避免当前K线未来函数，取过去20周期带宽极小值
         df["BB_WIDTH_MIN"] = df["BB_WIDTH"].rolling(20).min().shift(1)
         
-        df = df.dropna().iloc[-2:] # 仅分析最新两根K线
+        df = df.dropna().iloc[-2:]
         if len(df) < 2: continue
         
         prev, last = df.iloc[0], df.iloc[1]
         sig_key = f"{sym}_{tf}_{int(last['ts'])}"
         if sig_key in st.session_state.signaled_keys: continue
         
-        # ================= 动态信号逻辑 =================
-        # 1. 趋势过滤
         uptrend = last["c"] > last["EMA200"] and last["EMA50"] > last["EMA200"]
         downtrend = last["c"] < last["EMA200"] and last["EMA50"] < last["EMA200"]
-        
-        # 2. MACD 金叉/死叉
         macd_long = prev["MACD_H"] < 0 and last["MACD_H"] > 0
         macd_short = prev["MACD_H"] > 0 and last["MACD_H"] < 0
         
-        # 3. 回踩过滤 (动态开关)
-        if params['req_pullback']:
-            near_long = last["l"] <= last["EMA50"] * (1 + params['pullback_tol']) and last["c"] > last["EMA50"]
-            near_short = last["h"] >= last["EMA50"] * (1 - params['pullback_tol']) and last["c"] < last["EMA50"]
-        else:
-            near_long = True
-            near_short = True
-            
-        # 4. 成交量确认
+        near_long = (last["l"] <= last["EMA50"] * (1 + params['pullback_tol']) and last["c"] > last["EMA50"]) if params['req_pullback'] else True
+        near_short = (last["h"] >= last["EMA50"] * (1 - params['pullback_tol']) and last["c"] < last["EMA50"]) if params['req_pullback'] else True
         vol_ok = last["v"] > last["Vol_MA"] * params['vol_mult']
-        
-        # 5. RSI 过滤
         rsi_ok_long = last["RSI"] < params['rsi_long_max']
         rsi_ok_short = last["RSI"] > params['rsi_short_min']
+        squeeze_ok = (last["BB_WIDTH"] < last["BB_WIDTH_MIN"] * params['squeeze_tol']) if params['req_squeeze'] else True
         
-        # 6. 🌟 布林带收口过滤 (核心新增)
-        if params['req_squeeze']:
-            squeeze_ok = last["BB_WIDTH"] < last["BB_WIDTH_MIN"] * params['squeeze_tol']
-        else:
-            squeeze_ok = True
-            
-        # ✅ 做多触发
         if uptrend and macd_long and near_long and vol_ok and rsi_ok_long and squeeze_ok:
             sl = last["l"] - 1.2 * last["ATR"]
             tp = last["c"] + 2.0 * (last["c"] - sl)
@@ -168,7 +168,6 @@ def scan_signals(tf, params):
             st.session_state.signaled_keys.add(sig_key)
             send_push(msg)
             
-        # ✅ 做空触发
         elif downtrend and macd_short and near_short and vol_ok and rsi_ok_short and squeeze_ok:
             sl = last["h"] + 1.2 * last["ATR"]
             tp = last["c"] - 2.0 * (sl - last["c"])
@@ -186,7 +185,7 @@ if st.button("🔄 立即扫描信号", type="primary"):
 
     st.subheader(f"📡 {timeframe} 策略信号 ({mode.split(' ')[0]})")
     if df_sig.empty:
-        st.info(f"✅ 当前无符合 [{mode}] 的信号。系统已自动过滤低质量形态与震荡市，避免假突破。")
+        st.info(f"✅ 当前无符合 [{mode}] 的信号。系统已自动过滤低质量形态与震荡市。")
     else:
         st.dataframe(df_sig.style.applymap(
             lambda v: "color: #00C853; font-weight: bold" if "多" in str(v) else ("color: #FF1744; font-weight: bold" if "空" in str(v) else ""),
@@ -194,7 +193,6 @@ if st.button("🔄 立即扫描信号", type="primary"):
         ), use_container_width=True, hide_index=True)
         st.success(f"已发现 {len(df_sig)} 个高胜率信号，推送已发送至您的手机！")
 
-    # 🧹 清理过期记录（保留1小时）
     current_ts = int(time.time() * 1000)
     st.session_state.signaled_keys = {k for k in st.session_state.signaled_keys if current_ts - int(k.split("_")[-1]) < 3600000}
 
