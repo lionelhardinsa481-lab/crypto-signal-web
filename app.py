@@ -35,13 +35,23 @@ if "cache_data" not in st.session_state:
 now = time.time()
 st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.items() if now - v < 3600}
 
-# ================= 智能交易所连接 (核心修复) =================
+# ================= 智能交易所连接 =================
 @st.cache_resource
 def get_smart_exchange():
-    """
-    自动尝试连接币安备用线路，如果失败则切换 OKX
-    """
-    # 1. 尝试币安 (使用官方备用域名 api.binance.vision 防封禁)
+    # 1. 尝试 OKX (优先 OKX，因为国内服务器连 OKX 通常比币安稳)
+    try:
+        ex_okx = ccxt.okx({
+            "options": {"defaultType": "swap"}, 
+            "enableRateLimit": True, 
+            "timeout": 10000
+        })
+        # 测试连接
+        ex_okx.fetch_ticker("BTC/USDT:USDT")
+        return ex_okx, "OKX (欧易)"
+    except Exception as e:
+        pass 
+        
+    # 2. 尝试币安备用线路
     try:
         ex_binance = ccxt.binance({
             "options": {"defaultType": "swap"}, 
@@ -54,77 +64,44 @@ def get_smart_exchange():
                 }
             }
         })
-        # 简单测试一下能否获取 ticker
         ex_binance.fetch_ticker("BTC/USDT:USDT")
         return ex_binance, "Binance (备用线路)"
-    except Exception as e:
-        pass 
-        
-    # 2. 尝试 OKX (欧易)
-    try:
-        ex_okx = ccxt.okx({
-            "options": {"defaultType": "swap"}, 
-            "enableRateLimit": True, 
-            "timeout": 10000
-        })
-        ex_okx.fetch_ticker("BTC/USDT:USDT")
-        return ex_okx, "OKX (欧易)"
     except Exception as e:
         return None, "连接失败"
 
 EXCHANGE, EXCHANGE_NAME = get_smart_exchange()
 
-# ================= 动态币种池 =================
-# 修复点：去掉了 EXCHANGE 对象参数，改为在函数内部直接使用全局变量 EXCHANGE
-@st.cache_data(ttl=1800)
-def get_top_futures_symbols(ex_name, limit=100):
-    # 硬编码 fallback 列表 (主流币种)
-    fallback = [
-        "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
-        "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
-        "TON/USDT:USDT", "DOT/USDT:USDT", "MATIC/USDT:USDT", "SHIB/USDT:USDT", "LTC/USDT:USDT",
-        "UNI/USDT:USDT", "ATOM/USDT:USDT", "ETC/USDT:USDT", "FIL/USDT:USDT", "AAVE/USDT:USDT",
-        "NEAR/USDT:USDT", "OP/USDT:USDT", "APT/USDT:USDT", "ARB/USDT:USDT", "STX/USDT:USDT",
-        "WIF/USDT:USDT", "PEPE/USDT:USDT", "FET/USDT:USDT", "RENDER/USDT:USDT", "IMX/USDT:USDT",
-        "SUI/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "INJ/USDT:USDT", "RUNE/USDT:USDT",
-        "FTM/USDT:USDT", "ALGO/USDT:USDT", "SAND/USDT:USDT", "MANA/USDT:USDT", "AXS/USDT:USDT",
-        "GALA/USDT:USDT", "EOS/USDT:USDT", "XLM/USDT:USDT", "VET/USDT:USDT", "THETA/USDT:USDT",
-        "ICP/USDT:USDT", "EGLD/USDT:USDT", "FLOW/USDT:USDT", "CHZ/USDT:USDT", "ENJ/USDT:USDT",
-        "JUP/USDT:USDT", "W/USDT:USDT", "TAO/USDT:USDT", "AR/USDT:USDT", "BLUR/USDT:USDT",
-        "SSV/USDT:USDT", "LDO/USDT:USDT", "GRT/USDT:USDT", "PENDLE/USDT:USDT", "PYTH/USDT:USDT",
-        "JTO/USDT:USDT", "NOT/USDT:USDT", "BONK/USDT:USDT", "FLOKI/USDT:USDT", "BOME/USDT:USDT",
-        "ORDI/USDT:USDT", "SATS/USDT:USDT", "ACE/USDT:USDT", "NFP/USDT:USDT", "AI/USDT:USDT",
-        "ALT/USDT:USDT", "JASMY/USDT:USDT", "ONDO/USDT:USDT", "STRK/USDT:USDT", "MEME/USDT:USDT",
-        "PIXEL/USDT:USDT", "PORTAL/USDT:USDT", "AEVO/USDT:USDT", "ETHFI/USDT:USDT", "TNSR/USDT:USDT",
-        "OM/USDT:USDT", "REZ/USDT:USDT", "ZETA/USDT:USDT", "IO/USDT:USDT", "ZK/USDT:USDT",
-        "ZRO/USDT:USDT", "TLM/USDT:USDT", "KAVA/USDT:USDT", "ROSE/USDT:USDT", "CRO/USDT:USDT",
-        "DASH/USDT:USDT", "ZEC/USDT:USDT", "COMP/USDT:USDT", "MKR/USDT:USDT", "SNX/USDT:USDT",
-        "LRC/USDT:USDT", "1INCH/USDT:USDT", "SXP/USDT:USDT", "HOT/USDT:USDT", "BTT/USDT:USDT",
-        "WIN/USDT:USDT", "STORJ/USDT:USDT", "SKL/USDT:USDT", "CTSI/USDT:USDT", "DENT/USDT:USDT",
-        "OCEAN/USDT:USDT", "TRB/USDT:USDT", "HIGH/USDT:USDT", "MAGIC/USDT:USDT", "YGG/USDT:USDT",
-        "DYDX/USDT:USDT", "GMX/USDT:USDT", "API3/USDT:USDT", "COTI/USDT:USDT", "HBAR/USDT:USDT",
-        "ALICE/USDT:USDT"
-    ]
-    
-    if EXCHANGE is None:
-        return fallback, f"⚠️ 无法连接交易所，使用默认列表"
+# ================= 核心币种列表 (硬编码，确保 100% 有数据) =================
+# 直接使用这个列表，不再依赖不稳定的 API 获取
+CORE_SYMBOLS = [
+    "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
+    "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
+    "TON/USDT:USDT", "DOT/USDT:USDT", "MATIC/USDT:USDT", "SHIB/USDT:USDT", "LTC/USDT:USDT",
+    "UNI/USDT:USDT", "ATOM/USDT:USDT", "ETC/USDT:USDT", "FIL/USDT:USDT", "AAVE/USDT:USDT",
+    "NEAR/USDT:USDT", "OP/USDT:USDT", "APT/USDT:USDT", "ARB/USDT:USDT", "STX/USDT:USDT",
+    "WIF/USDT:USDT", "PEPE/USDT:USDT", "FET/USDT:USDT", "RENDER/USDT:USDT", "IMX/USDT:USDT",
+    "SUI/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "INJ/USDT:USDT", "RUNE/USDT:USDT",
+    "FTM/USDT:USDT", "ALGO/USDT:USDT", "SAND/USDT:USDT", "MANA/USDT:USDT", "AXS/USDT:USDT",
+    "GALA/USDT:USDT", "EOS/USDT:USDT", "XLM/USDT:USDT", "VET/USDT:USDT", "THETA/USDT:USDT",
+    "ICP/USDT:USDT", "EGLD/USDT:USDT", "FLOW/USDT:USDT", "CHZ/USDT:USDT", "ENJ/USDT:USDT",
+    "JUP/USDT:USDT", "W/USDT:USDT", "TAO/USDT:USDT", "AR/USDT:USDT", "BLUR/USDT:USDT",
+    "SSV/USDT:USDT", "LDO/USDT:USDT", "GRT/USDT:USDT", "PENDLE/USDT:USDT", "PYTH/USDT:USDT",
+    "JTO/USDT:USDT", "NOT/USDT:USDT", "BONK/USDT:USDT", "FLOKI/USDT:USDT", "BOME/USDT:USDT",
+    "ORDI/USDT:USDT", "SATS/USDT:USDT", "ACE/USDT:USDT", "NFP/USDT:USDT", "AI/USDT:USDT",
+    "ALT/USDT:USDT", "JASMY/USDT:USDT", "ONDO/USDT:USDT", "STRK/USDT:USDT", "MEME/USDT:USDT",
+    "PIXEL/USDT:USDT", "PORTAL/USDT:USDT", "AEVO/USDT:USDT", "ETHFI/USDT:USDT", "TNSR/USDT:USDT",
+    "OM/USDT:USDT", "REZ/USDT:USDT", "ZETA/USDT:USDT", "IO/USDT:USDT", "ZK/USDT:USDT",
+    "ZRO/USDT:USDT", "TLM/USDT:USDT", "KAVA/USDT:USDT", "ROSE/USDT:USDT", "CRO/USDT:USDT",
+    "DASH/USDT:USDT", "ZEC/USDT:USDT", "COMP/USDT:USDT", "MKR/USDT:USDT", "SNX/USDT:USDT",
+    "LRC/USDT:USDT", "1INCH/USDT:USDT", "SXP/USDT:USDT", "HOT/USDT:USDT", "BTT/USDT:USDT",
+    "WIN/USDT:USDT", "STORJ/USDT:USDT", "SKL/USDT:USDT", "CTSI/USDT:USDT", "DENT/USDT:USDT",
+    "OCEAN/USDT:USDT", "TRB/USDT:USDT", "HIGH/USDT:USDT", "MAGIC/USDT:USDT", "YGG/USDT:USDT",
+    "DYDX/USDT:USDT", "GMX/USDT:USDT", "API3/USDT:USDT", "COTI/USDT:USDT", "HBAR/USDT:USDT",
+    "ALICE/USDT:USDT"
+]
 
-    try:
-        # 直接使用全局 EXCHANGE 对象
-        tickers = EXCHANGE.fetch_tickers()
-        # 过滤 USDT 合约，且成交量大于 0
-        valid = {k: v for k, v in tickers.items() if k.endswith("/USDT:USDT") and isinstance(v.get("quoteVolume"), (int, float)) and v["quoteVolume"] > 0}
-        # 按成交额排序
-        sorted_p = sorted(valid.items(), key=lambda x: x[1]["quoteVolume"], reverse=True)
-        return [p[0] for p in sorted_p[:limit]], f"✅ {ex_name} 实时排行"
-    except Exception as e:
-        return fallback, f"⚠️ API获取失败，使用默认列表 ({str(e)[:30]})"
-
-if EXCHANGE:
-    # 修复点：只传递字符串参数 EXCHANGE_NAME，不传对象
-    SYMBOLS, DATA_SRC = get_top_futures_symbols(EXCHANGE_NAME, 100)
-else:
-    SYMBOLS, DATA_SRC = [], "无连接"
+SYMBOLS = CORE_SYMBOLS
+DATA_SRC = "内置主流币种列表 (稳定版)"
 
 # ================= 侧边栏配置 =================
 st.sidebar.header("⚙️ 策略参数")
@@ -170,7 +147,7 @@ if "pushed_keys" not in st.session_state:
 # ================= 核心扫描函数 =================
 def get_ohlcv(sym, tf, limit=250):
     try:
-        # 使用全局 EXCHANGE
+        if not EXCHANGE: return pd.DataFrame()
         ohlcv = EXCHANGE.fetch_ohlcv(sym, timeframe=tf, limit=limit)
         if not ohlcv: return pd.DataFrame()
         return pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
