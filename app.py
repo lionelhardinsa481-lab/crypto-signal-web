@@ -10,12 +10,13 @@ WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 # ==========================================
 
 st.set_page_config(page_title="Crypto 双策略信号监控", layout="wide", page_icon="📈")
-st.title("📊 币安合约 Top50 双策略信号监控")
-st.caption("🔥 波段回踩(高胜率) + 异动突破(抓直线拉升) | 独立开关 | 防重复推送")
+st.title("📊 币安合约 Top100 双策略信号监控")
+st.caption("🔥 波段回踩(高胜率) + 异动突破(抓直线拉升) | 独立开关 | 防重复推送 | 100币种全覆盖")
 
-# ================= 动态币种池 =================
+# ================= 动态币种池 (扩容至100) =================
 @st.cache_data(ttl=3600)
-def get_top_futures_symbols(limit=50):
+def get_top_futures_symbols(limit=100):
+    # 精选100主流USDT永续合约（降级备用池，按流动性排序）
     fallback_symbols = [
         "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
         "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
@@ -26,7 +27,21 @@ def get_top_futures_symbols(limit=50):
         "SUI/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "INJ/USDT:USDT", "RUNE/USDT:USDT",
         "FTM/USDT:USDT", "ALGO/USDT:USDT", "SAND/USDT:USDT", "MANA/USDT:USDT", "AXS/USDT:USDT",
         "GALA/USDT:USDT", "EOS/USDT:USDT", "XLM/USDT:USDT", "VET/USDT:USDT", "THETA/USDT:USDT",
-        "ICP/USDT:USDT", "EGLD/USDT:USDT", "FLOW/USDT:USDT", "CHZ/USDT:USDT", "ENJ/USDT:USDT"
+        "ICP/USDT:USDT", "EGLD/USDT:USDT", "FLOW/USDT:USDT", "CHZ/USDT:USDT", "ENJ/USDT:USDT",
+        "JUP/USDT:USDT", "W/USDT:USDT", "TAO/USDT:USDT", "AR/USDT:USDT", "BLUR/USDT:USDT",
+        "SSV/USDT:USDT", "LDO/USDT:USDT", "GRT/USDT:USDT", "PENDLE/USDT:USDT", "PYTH/USDT:USDT",
+        "JTO/USDT:USDT", "NOT/USDT:USDT", "BONK/USDT:USDT", "FLOKI/USDT:USDT", "BOME/USDT:USDT",
+        "ORDI/USDT:USDT", "SATS/USDT:USDT", "ACE/USDT:USDT", "NFP/USDT:USDT", "AI/USDT:USDT",
+        "ALT/USDT:USDT", "JASMY/USDT:USDT", "ONDO/USDT:USDT", "STRK/USDT:USDT", "MEME/USDT:USDT",
+        "PIXEL/USDT:USDT", "PORTAL/USDT:USDT", "AEVO/USDT:USDT", "ETHFI/USDT:USDT", "TNSR/USDT:USDT",
+        "OM/USDT:USDT", "REZ/USDT:USDT", "ZETA/USDT:USDT", "IO/USDT:USDT", "ZK/USDT:USDT",
+        "ZRO/USDT:USDT", "TLM/USDT:USDT", "KAVA/USDT:USDT", "ROSE/USDT:USDT", "CRO/USDT:USDT",
+        "DASH/USDT:USDT", "ZEC/USDT:USDT", "COMP/USDT:USDT", "MKR/USDT:USDT", "SNX/USDT:USDT",
+        "LRC/USDT:USDT", "1INCH/USDT:USDT", "SXP/USDT:USDT", "HOT/USDT:USDT", "BTT/USDT:USDT",
+        "WIN/USDT:USDT", "STORJ/USDT:USDT", "SKL/USDT:USDT", "CTSI/USDT:USDT", "DENT/USDT:USDT",
+        "OCEAN/USDT:USDT", "TRB/USDT:USDT", "HIGH/USDT:USDT", "MAGIC/USDT:USDT", "YGG/USDT:USDT",
+        "DYDX/USDT:USDT", "GMX/USDT:USDT", "API3/USDT:USDT", "COTI/USDT:USDT", "HBAR/USDT:USDT",
+        "ALICE/USDT:USDT"
     ]
     try:
         exchange = ccxt.binance({
@@ -46,7 +61,7 @@ def get_top_futures_symbols(limit=50):
     except Exception as e:
         return fallback_symbols, f"⚠️ 动态获取失败 ({str(e)[:40]})，已切换备用池"
 
-SYMBOLS, DATA_SOURCE = get_top_futures_symbols(50)
+SYMBOLS, DATA_SOURCE = get_top_futures_symbols(100)
 
 # ================= 侧边栏配置 =================
 st.sidebar.header("⚙️ 策略参数配置")
@@ -58,7 +73,6 @@ mode = st.sidebar.radio(
     index=1
 )
 
-# 🆕 双策略独立开关
 enable_pump = st.sidebar.checkbox("🔥 副策略：启用异动突破 (抓直线拉升/消息盘)", value=False)
 
 MODE_PARAMS = {
@@ -90,6 +104,7 @@ with st.sidebar.expander("📊 当前生效阈值", expanded=True):
         st.success("🔥 **异动策略已开启**")
         st.caption("- 单K涨幅 > 10%\n- 成交量 > 4倍均量\n- 突破20周期最高价\n- 过滤低流动性(<50万U)")
     st.caption(f"🌐 数据源: {DATA_SOURCE}")
+    st.warning(f"⏱️ 扫描 {len(SYMBOLS)} 个币种约需 25~40 秒，请耐心等待进度条完成。")
 
 # 🤖 机器人测试模块
 st.sidebar.divider()
@@ -177,8 +192,6 @@ def scan_signals(tf, params, enable_pump=False):
         df["LOWER"] = df["MB"] - 2 * df["STD"]
         df["BB_WIDTH"] = (df["UPPER"] - df["LOWER"]) / df["MB"]
         df["BB_WIDTH_MIN"] = df["BB_WIDTH"].rolling(20).min().shift(1)
-        
-        # 🆕 为异动策略计算20周期前高
         df["HH20"] = df["h"].rolling(20).max().shift(1)
 
         df = df.dropna().iloc[-2:]
@@ -226,7 +239,7 @@ def scan_signals(tf, params, enable_pump=False):
                 price_breakout = last["c"] > last["HH20"]
                 vol_surge = last["v"] > last["Vol_MA"] * 4.0
                 pump_mag = (last["c"] - prev["c"]) / prev["c"] > 0.10
-                min_liquidity = (last["c"] * last["v"]) > 500_000 # 过滤深度差的土狗
+                min_liquidity = (last["c"] * last["v"]) > 500_000
                 
                 if price_breakout and vol_surge and pump_mag and min_liquidity:
                     sl = last["l"] * 0.90
@@ -262,4 +275,4 @@ if st.button("🔄 立即扫描信号", type="primary"):
     st.session_state.signaled_keys = {k for k in st.session_state.signaled_keys if current_ts - int(k.split("_")[-1]) < 3600000}
 
 st.divider()
-st.caption("⚠️ 风险提示：合约交易自带杠杆，异动策略波动极大，请严格设置硬止损。本工具仅为技术面辅助，不构成投资建议。")
+st.caption("⚠️ 风险提示：合约交易自带杠杆，异动策略波动极大，请严格设置硬止损。本工具仅为技术面辅助，不构成投资建议。Streamlit 云端有休眠机制，建议配合本地运行或自动刷新插件。")
