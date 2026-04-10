@@ -96,7 +96,6 @@ DATA_SRC = "内置主流币种列表"
 
 # ================= 辅助函数：智能格式化价格 =================
 def fmt_price(price):
-    """根据价格大小自动保留小数位，避免 0.04 这种无意义数据"""
     if price < 0.01: return f"{price:.6f}"
     if price < 1: return f"{price:.4f}"
     if price < 100: return f"{price:.2f}"
@@ -201,7 +200,7 @@ def scan(tf, t_cfg, trend_on, pump_on):
                 
                 c, h_curr, l_curr = float(last["c"]), float(last["h"]), float(last["l"])
                 
-                #  新增过滤：如果 K 线波动太小（高低点差值小于价格的 0.5%），直接跳过，避免推送垃圾信号
+                # 过滤微小波动
                 volatility = (h_curr - l_curr) / c
                 if volatility < 0.005: 
                     continue
@@ -222,8 +221,11 @@ def scan(tf, t_cfg, trend_on, pump_on):
                             sl = l_curr - 1.5 * (h_curr - l_curr)
                             tp = c + 2.0 * (c - sl)
                             
-                            # 使用智能格式化
-                            msg = f"{sym_name} 🟢趋势多\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            # 构建详细的逻辑说明
+                            vol_ratio = vol_curr / vol_ma
+                            logic_text = f"逻辑: 均线多头 + MACD金叉 + 放量({vol_ratio:.1f}x)"
+                            
+                            msg = f"{sym_name} 🟢趋势多\n{logic_text}\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
                             results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_t)
                             st.session_state.cache_data[key_t] = time.time()
@@ -234,7 +236,10 @@ def scan(tf, t_cfg, trend_on, pump_on):
                             sl = h_curr + 1.5 * (h_curr - l_curr)
                             tp = c - 2.0 * (sl - c)
                             
-                            msg = f"{sym_name} 🔴趋势空\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            vol_ratio = vol_curr / vol_ma
+                            logic_text = f"逻辑: 均线空头 + MACD死叉 + 放量({vol_ratio:.1f}x)"
+                            
+                            msg = f"{sym_name} 🔴趋势空\n{logic_text}\n入:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
                             results.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🔴 空", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_t)
                             st.session_state.cache_data[key_t] = time.time()
@@ -257,7 +262,10 @@ def scan(tf, t_cfg, trend_on, pump_on):
                             sl = l_curr * 0.92
                             tp = c * 1.15
                             
-                            msg = f"{sym_name} 🚀异动突破\n现:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
+                            vol_ratio = vol_curr / vol_ma
+                            logic_text = f"逻辑: 突破20日高点 + 巨量({vol_ratio:.1f}x) + 涨幅({change*100:.1f}%)"
+                            
+                            msg = f"{sym_name} 🚀异动突破\n{logic_text}\n现:{fmt_price(c)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}"
                             results.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":fmt_price(c), "止损":fmt_price(sl), "止盈":fmt_price(tp), "时间":str(last['dt'])})
                             st.session_state.pushed_keys.add(key_p)
                             st.session_state.cache_data[key_p] = time.time()
