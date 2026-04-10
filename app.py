@@ -19,9 +19,38 @@ def get_top_futures_symbols(limit=50):
     try:
         # 直接调用币安 FAPI，按 24H 成交额排序
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        data = requests.get(url, timeout=10).json()
-        # 过滤纯 USDT 永续合约，排除杠杆/现货/BUSD
-        usdt_perps = [d for d in data if d["symbol"].endswith("USDT") and "USDC" not in d["symbol"] and "BUSD" not in d["symbol"]]
+        @st.cache_data(ttl=1800)
+def get_top_futures_symbols(limit=50):
+    try:
+        # 1. 添加真实浏览器请求头，防止被币安风控拦截
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()  # 捕获 4xx/5xx 状态码
+        data = resp.json()
+        
+        # 2. 严格校验返回类型，防止 API 报错字典导致崩溃
+        if not isinstance(data, list):
+            raise ValueError(f"API返回非列表格式: {type(data).__name__}")
+            
+        # 3. 使用 .get() 安全取值，避免 KeyError
+        usdt_perps = [
+            d for d in data 
+            if d.get("symbol", "").endswith("USDT") 
+            and "USDC" not in d.get("symbol", "") 
+            and d.get("status") == "TRADING"  # 过滤下架/暂停交易币种
+        ]
+        
+        sorted_perps = sorted(usdt_perps, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+        symbols = [f"{p['symbol'].replace('USDT','')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
+        return symbols
+        
+    except Exception as e:
+        st.warning(f"⚠️ 获取币安 Top50 失败，使用备用列表: {str(e)[:60]}")
+        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
         sorted_perps = sorted(usdt_perps, key=lambda x: float(x["quoteVolume"]), reverse=True)
         # 转换为 ccxt 永续合约标准格式: BTC/USDT:USDT
         symbols = [f"{p['symbol'].replace('USDT','')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
