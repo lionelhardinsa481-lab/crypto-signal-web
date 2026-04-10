@@ -5,7 +5,7 @@ import requests
 import time
 
 # ================= 配置区 =================
-DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
+DINGTALK_WEBHOOK = "在此粘贴你的钉钉 Webhook"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 # ==========================================
 
@@ -14,50 +14,38 @@ st.title("📊 币安合约 Top50 多周期信号监控")
 st.caption("🔥 动态追踪资金热点 | 布林收口过滤 | 趋势+动量+量价共振 | 防重复推送")
 
 # ================= 动态币种池 =================
-@st.cache_data(ttl=1800) # 缓存 30 分钟，避免频繁请求
+@st.cache_data(ttl=1800)
 def get_top_futures_symbols(limit=50):
     try:
-        # 直接调用币安 FAPI，按 24H 成交额排序
-        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        @st.cache_data(ttl=1800)
-def get_top_futures_symbols(limit=50):
-    try:
-        # 1. 添加真实浏览器请求头，防止被币安风控拦截
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json"
         }
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
         resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()  # 捕获 4xx/5xx 状态码
+        resp.raise_for_status()
         data = resp.json()
-        
-        # 2. 严格校验返回类型，防止 API 报错字典导致崩溃
+
         if not isinstance(data, list):
             raise ValueError(f"API返回非列表格式: {type(data).__name__}")
-            
-        # 3. 使用 .get() 安全取值，避免 KeyError
+
         usdt_perps = [
-            d for d in data 
-            if d.get("symbol", "").endswith("USDT") 
-            and "USDC" not in d.get("symbol", "") 
-            and d.get("status") == "TRADING"  # 过滤下架/暂停交易币种
+            d for d in data
+            if d.get("symbol", "").endswith("USDT")
+            and "USDC" not in d.get("symbol", "")
+            and d.get("status") == "TRADING"
         ]
-        
+
         sorted_perps = sorted(usdt_perps, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-        symbols = [f"{p['symbol'].replace('USDT','')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
+        symbols = [f"{p['symbol'].replace('USDT', '')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
         return symbols
-        
+
     except Exception as e:
         st.warning(f"⚠️ 获取币安 Top50 失败，使用备用列表: {str(e)[:60]}")
-        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
-        sorted_perps = sorted(usdt_perps, key=lambda x: float(x["quoteVolume"]), reverse=True)
-        # 转换为 ccxt 永续合约标准格式: BTC/USDT:USDT
-        symbols = [f"{p['symbol'].replace('USDT','')}USDT/USDT:USDT" for p in sorted_perps[:limit]]
-        return symbols
-    except Exception as e:
-        st.warning(f"⚠️ 获取币安 Top50 失败，使用备用列表: {str(e)[:50]}")
-        return ["BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"]
+        return [
+            "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
+            "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
+        ]
 
 SYMBOLS = get_top_futures_symbols(50)
 
@@ -115,11 +103,13 @@ if st.sidebar.button("📤 一键测试推送", type="primary"):
             if resp.status_code == 200 and data.get("errcode", -1) == 0:
                 success += 1
             else:
-                failed.append(f"{name}: API返回 {data.get('errcode','')}")
+                failed.append(f"{name}: API返回 {data.get('errcode', '')}")
         except Exception as e:
             failed.append(f"{name}: 网络失败 ({str(e)[:30]})")
-    if success > 0: st.sidebar.success(f"✅ 测试成功！已送达 {success} 个平台")
-    if failed: st.sidebar.error("❌ 部分通道异常:\n" + "\n".join(failed))
+    if success > 0:
+        st.sidebar.success(f"✅ 测试成功！已送达 {success} 个平台")
+    if failed:
+        st.sidebar.error("❌ 部分通道异常:\n" + "\n".join(failed))
 
 # 初始化防重复状态
 if "signaled_keys" not in st.session_state:
@@ -132,93 +122,100 @@ def get_ohlcv(symbol, tf, limit=250):
         exchange = ccxt.binance({"options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 10000})
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
         return pd.DataFrame(ohlcv, columns=["ts", "o", "h", "l", "c", "v"])
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def send_push(text):
     webhooks = [w for w in [DINGTALK_WEBHOOK, WECOM_WEBHOOK] if w and "在此粘贴" not in w]
-    if not webhooks: return
+    if not webhooks:
+        return
     content = f"【Crypto合约-{timeframe}-{mode.split(' ')[0]}】\n{text}"
     for wh in webhooks:
-        try: requests.post(wh, json={"msgtype": "text", "text": {"content": content}}, timeout=5)
-        except: pass
+        try:
+            requests.post(wh, json={"msgtype": "text", "text": {"content": content}}, timeout=5)
+        except Exception:
+            pass
 
 def scan_signals(tf, params):
     results = []
     progress_bar = st.progress(0, text="正在扫描合约市场...")
-    
+
     for i, sym in enumerate(SYMBOLS):
-        progress_bar.progress((i+1)/len(SYMBOLS), text=f"扫描进度: {i+1}/{len(SYMBOLS)} | 当前: {sym.replace('/USDT:USDT','')}")
+        progress_bar.progress((i + 1) / len(SYMBOLS), text=f"扫描进度: {i+1}/{len(SYMBOLS)} | 当前: {sym.replace('/USDT:USDT', '')}")
         df = get_ohlcv(sym, tf, 250)
-        if df.empty or len(df) < 60: continue
+        if df.empty or len(df) < 60:
+            continue
 
         df["dt"] = pd.to_datetime(df["ts"], unit="ms")
         df["EMA50"] = df["c"].ewm(span=50, adjust=False).mean()
         df["EMA200"] = df["c"].ewm(span=200, adjust=False).mean()
-        
+
         ema12 = df["c"].ewm(span=12, adjust=False).mean()
         ema26 = df["c"].ewm(span=26, adjust=False).mean()
         dif = ema12 - ema26
         dea = dif.ewm(span=9, adjust=False).mean()
         df["MACD_H"] = 2 * (dif - dea)
-        
+
         delta = df["c"].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
         rs = gain.rolling(14).mean() / loss.rolling(14).mean()
         df["RSI"] = 100 - (100 / (1 + rs))
-        
-        tr = pd.concat([df["h"]-df["l"], (df["h"]-df["c"].shift(1)).abs(), (df["l"]-df["c"].shift(1)).abs()], axis=1).max(axis=1)
+
+        tr = pd.concat([df["h"] - df["l"], (df["h"] - df["c"].shift(1)).abs(), (df["l"] - df["c"].shift(1)).abs()], axis=1).max(axis=1)
         df["ATR"] = tr.rolling(14).mean()
         df["Vol_MA"] = df["v"].rolling(20).mean()
-        
+
         df["MB"] = df["c"].rolling(20).mean()
         df["STD"] = df["c"].rolling(20).std()
         df["UPPER"] = df["MB"] + 2 * df["STD"]
         df["LOWER"] = df["MB"] - 2 * df["STD"]
         df["BB_WIDTH"] = (df["UPPER"] - df["LOWER"]) / df["MB"]
         df["BB_WIDTH_MIN"] = df["BB_WIDTH"].rolling(20).min().shift(1)
-        
+
         df = df.dropna().iloc[-2:]
-        if len(df) < 2: continue
-        
+        if len(df) < 2:
+            continue
+
         prev, last = df.iloc[0], df.iloc[1]
         sig_key = f"{sym}_{tf}_{int(last['ts'])}"
-        if sig_key in st.session_state.signaled_keys: continue
-        
+        if sig_key in st.session_state.signaled_keys:
+            continue
+
         uptrend = last["c"] > last["EMA200"] and last["EMA50"] > last["EMA200"]
         downtrend = last["c"] < last["EMA200"] and last["EMA50"] < last["EMA200"]
         macd_long = prev["MACD_H"] < 0 and last["MACD_H"] > 0
         macd_short = prev["MACD_H"] > 0 and last["MACD_H"] < 0
-        
+
         near_long = (last["l"] <= last["EMA50"] * (1 + params['pullback_tol']) and last["c"] > last["EMA50"]) if params['req_pullback'] else True
         near_short = (last["h"] >= last["EMA50"] * (1 - params['pullback_tol']) and last["c"] < last["EMA50"]) if params['req_pullback'] else True
         vol_ok = last["v"] > last["Vol_MA"] * params['vol_mult']
         rsi_ok_long = last["RSI"] < params['rsi_long_max']
         rsi_ok_short = last["RSI"] > params['rsi_short_min']
         squeeze_ok = (last["BB_WIDTH"] < last["BB_WIDTH_MIN"] * params['squeeze_tol']) if params['req_squeeze'] else True
-        
+
         if uptrend and macd_long and near_long and vol_ok and rsi_ok_long and squeeze_ok:
             sl = last["l"] - 1.2 * last["ATR"]
             tp = last["c"] + 2.0 * (last["c"] - sl)
-            msg = f"{sym.replace('/USDT:USDT','')} 🟢做多\n入场:{last['c']:.2f}\n止损:{sl:.2f}\n止盈:{tp:.2f}"
-            results.append({"币种":sym.replace('/USDT:USDT',''), "方向":"🟢 做多", "入场":f"{last['c']:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "盈亏比":"1:2", "触发时间":str(last['dt']), "收口确认":"✅"})
+            msg = f"{sym.replace('/USDT:USDT', '')} 🟢做多\n入场:{last['c']:.2f}\n止损:{sl:.2f}\n止盈:{tp:.2f}"
+            results.append({"币种": sym.replace('/USDT:USDT', ''), "方向": "🟢 做多", "入场": f"{last['c']:.2f}", "止损": f"{sl:.2f}", "止盈": f"{tp:.2f}", "盈亏比": "1:2", "触发时间": str(last['dt']), "收口确认": "✅"})
             st.session_state.signaled_keys.add(sig_key)
             send_push(msg)
-            
+
         elif downtrend and macd_short and near_short and vol_ok and rsi_ok_short and squeeze_ok:
             sl = last["h"] + 1.2 * last["ATR"]
             tp = last["c"] - 2.0 * (sl - last["c"])
-            msg = f"{sym.replace('/USDT:USDT','')} 🔴做空\n入场:{last['c']:.2f}\n止损:{sl:.2f}\n止盈:{tp:.2f}"
-            results.append({"币种":sym.replace('/USDT:USDT',''), "方向":"🔴 做空", "入场":f"{last['c']:.2f}", "止损":f"{sl:.2f}", "止盈":f"{tp:.2f}", "盈亏比":"1:2", "触发时间":str(last['dt']), "收口确认":"✅"})
+            msg = f"{sym.replace('/USDT:USDT', '')} 🔴做空\n入场:{last['c']:.2f}\n止损:{sl:.2f}\n止盈:{tp:.2f}"
+            results.append({"币种": sym.replace('/USDT:USDT', ''), "方向": "🔴 做空", "入场": f"{last['c']:.2f}", "止损": f"{sl:.2f}", "止盈": f"{tp:.2f}", "盈亏比": "1:2", "触发时间": str(last['dt']), "收口确认": "✅"})
             st.session_state.signaled_keys.add(sig_key)
             send_push(msg)
-            
+
     progress_bar.empty()
-    return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种","方向","入场","止损","止盈","盈亏比","触发时间","收口确认"])
+    return pd.DataFrame(results) if results else pd.DataFrame(columns=["币种", "方向", "入场", "止损", "止盈", "盈亏比", "触发时间", "收口确认"])
 
 # ================= 界面渲染 =================
 st.info(f"📡 当前监控池: **币安 USDT 永续合约 24H 成交量 Top {len(SYMBOLS)}** | 数据每 30 分钟自动更新")
+
 if st.button("🔄 立即扫描信号", type="primary"):
     with st.spinner("策略计算中..."):
         df_sig = scan_signals(timeframe, cfg)
@@ -227,10 +224,14 @@ if st.button("🔄 立即扫描信号", type="primary"):
     if df_sig.empty:
         st.info(f"✅ 当前无符合 [{mode}] 的信号。系统已自动过滤低流动性与震荡合约。")
     else:
-        st.dataframe(df_sig.style.applymap(
-            lambda v: "color: #00C853; font-weight: bold" if "多" in str(v) else ("color: #FF1744; font-weight: bold" if "空" in str(v) else ""),
-            subset=["方向"]
-        ), use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_sig.style.applymap(
+                lambda v: "color: #00C853; font-weight: bold" if "多" in str(v) else ("color: #FF1744; font-weight: bold" if "空" in str(v) else ""),
+                subset=["方向"]
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
         st.success(f"已发现 {len(df_sig)} 个高胜率信号，推送已发送至您的手机！")
 
     current_ts = int(time.time() * 1000)
