@@ -10,7 +10,8 @@ import os
 DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=c5d26cf25df7d56b5e9bf1b08bbf888ee9b18ed2f9e89ef9cdd2548b3ffeede3"
 WECOM_WEBHOOK = "在此粘贴你的企微 Webhook"
 CACHE_FILE = "/tmp/signal_cache.json" 
-PORTFOLIO_FILE = "/tmp/portfolio.json" # 模拟盘数据持久化
+PORTFOLIO_FILE = "/tmp/portfolio.json"
+HISTORY_FILE = "/tmp/history.json"
 # ==========================================
 
 st.set_page_config(page_title="Crypto 实战信号监控", layout="wide", page_icon="📈")
@@ -31,20 +32,30 @@ def save_json(filepath, data):
     except: pass
 
 # ================= 模拟盘状态管理 =================
+# 初始化时加载
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_json(PORTFOLIO_FILE, [])
 if "history" not in st.session_state:
-    st.session_state.history = load_json("/tmp/history.json", [])
+    st.session_state.history = load_json(HISTORY_FILE, [])
+if "cache_data" not in st.session_state:
+    st.session_state.cache_data = load_json(CACHE_FILE, {})
+
+# 清理过期缓存 (1小时)
+now = time.time()
+st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.items() if now - v < 3600}
 
 def save_portfolio_state():
     save_json(PORTFOLIO_FILE, st.session_state.portfolio)
-    save_json("/tmp/history.json", st.session_state.history)
+    save_json(HISTORY_FILE, st.session_state.history)
+    save_json(CACHE_FILE, st.session_state.cache_data)
 
-# 清理缓存 (去重用)
-if "cache_data" not in st.session_state:
-    st.session_state.cache_data = load_json(CACHE_FILE, {})
-now = time.time()
-st.session_state.cache_data = {k: v for k, v in st.session_state.cache_data.items() if now - v < 3600}
+# 强制清理旧数据按钮 (如果报错可以使用)
+if st.sidebar.button("🗑️ 重置模拟盘数据", type="secondary"):
+    st.session_state.portfolio = []
+    st.session_state.history = []
+    st.session_state.cache_data = {}
+    save_portfolio_state()
+    st.experimental_rerun()
 
 # ================= 智能交易所连接 =================
 @st.cache_resource
@@ -72,7 +83,7 @@ CORE_SYMBOLS = [
     "TON/USDT:USDT", "DOT/USDT:USDT", "MATIC/USDT:USDT", "SHIB/USDT:USDT", "LTC/USDT:USDT",
     "UNI/USDT:USDT", "ATOM/USDT:USDT", "ETC/USDT:USDT", "FIL/USDT:USDT", "AAVE/USDT:USDT",
     "NEAR/USDT:USDT", "OP/USDT:USDT", "APT/USDT:USDT", "ARB/USDT:USDT", "STX/USDT:USDT",
-    "WIF/USDT:USDT", "PEPE/USDT:USDT", "FET/USDT:USDT", "RENDER/USDT:USDT", "IMX/USDT:USDT",
+    "WIF/USDT:USDT", "PEPE/USDT:USDT", "FET/USDT:USDT", "RENDER/USDT:USDT", "IMX/USDT:USMT",
     "SUI/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "INJ/USDT:USDT", "RUNE/USDT:USDT",
     "FTM/USDT:USDT", "ALGO/USDT:USDT", "SAND/USDT:USDT", "MANA/USDT:USDT", "AXS/USDT:USDT",
     "GALA/USDT:USDT", "EOS/USDT:USDT", "XLM/USDT:USDT", "VET/USDT:USDT", "THETA/USDT:USDT",
@@ -81,7 +92,7 @@ CORE_SYMBOLS = [
     "SSV/USDT:USDT", "LDO/USDT:USDT", "GRT/USDT:USDT", "PENDLE/USDT:USDT", "PYTH/USDT:USDT",
     "JTO/USDT:USDT", "NOT/USDT:USDT", "BONK/USDT:USDT", "FLOKI/USDT:USDT", "BOME/USDT:USDT",
     "ORDI/USDT:USDT", "SATS/USDT:USDT", "ACE/USDT:USDT", "NFP/USDT:USDT", "AI/USDT:USDT",
-    "ALT/USDT:USDT", "JASMY/USDT:USDT", "ONDO/USDT:USDT", "STRK/USDT:USDT", "MEME/USDT:USDT",
+    "ALT/USDT:USDT", "JASMY/USDT:USDT", "ONDO/USDT:USDT", "STRK/USDT:USDT", "MEME/USDT:USMT",
     "PIXEL/USDT:USDT", "PORTAL/USDT:USDT", "AEVO/USDT:USDT", "ETHFI/USDT:USDT", "TNSR/USDT:USDT",
     "OM/USDT:USDT", "REZ/USDT:USDT", "ZETA/USDT:USDT", "IO/USDT:USDT", "ZK/USDT:USDT",
     "ZRO/USDT:USDT", "TLM/USDT:USDT", "KAVA/USDT:USDT", "ROSE/USDT:USDT", "CRO/USDT:USDT",
@@ -113,6 +124,9 @@ tf = st.sidebar.selectbox("🕰️ K线周期", ["5m", "15m", "1h", "4h"], index
 enable_trend = st.sidebar.checkbox("📈 启用趋势策略", value=True)
 enable_pump = st.sidebar.checkbox("🚀 启用异动策略", value=True)
 
+# 增加一个开关：是否允许做空 (很多人只喜欢做多)
+allow_short = st.sidebar.checkbox("📉 允许做空 (趋势策略)", value=True)
+
 TF_THRESHOLDS = {
     "5m": {"pump_pct": 0.03, "vol_mult": 3.0, "trend_vol": 1.5},
     "15m": {"pump_pct": 0.04, "vol_mult": 2.5, "trend_vol": 1.5},
@@ -120,12 +134,6 @@ TF_THRESHOLDS = {
     "4h": {"pump_pct": 0.08, "vol_mult": 1.8, "trend_vol": 1.2}
 }
 cfg = TF_THRESHOLDS[tf]
-
-# 🧪 推送自检
-st.sidebar.divider()
-if st.sidebar.button("🧪 模拟推送测试", type="primary"):
-    send_push("【测试】通道正常，模拟盘已就绪。")
-    st.sidebar.success("已发送测试消息")
 
 # ================= 核心扫描与模拟盘逻辑 =================
 def get_ohlcv(sym, tf, limit=250):
@@ -136,32 +144,25 @@ def get_ohlcv(sym, tf, limit=250):
         return pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
     except Exception: return pd.DataFrame()
 
-def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
+def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on, short_allowed):
     new_signals = []
     logs = {"total":0, "trend_pass":0, "pump_pass":0}
     
     if not EXCHANGE: return pd.DataFrame(), logs
 
-    # 1. 先处理持仓检查 (Check Portfolio)
-    # 我们需要获取所有持仓币种的最新价格来检查是否止损/止盈
-    # 为了效率，我们只在扫描循环中顺便检查
-    
-    active_portfolio = [] # 临时存储未平仓的
-    
     with st.status(f"正在扫描 & 管理模拟盘...", expanded=False) as status:
-        # 合并所有需要扫描的币种：监控池 + 当前持仓 (防止持仓币种不在监控池里被漏掉)
+        # 合并所有需要扫描的币种：监控池 + 当前持仓
         portfolio_symbols = [p['symbol'] + "/USDT:USDT" for p in st.session_state.portfolio]
         scan_list = list(set(SYMBOLS + portfolio_symbols))
         
+        # 标记哪些持仓已经被处理过（用于平仓逻辑）
+        processed_positions = set()
+
         for i, sym in enumerate(scan_list):
             if i % 10 == 0: status.update(label=f"进度: {i}/{len(scan_list)}")
             
             df = get_ohlcv(sym, tf, 250)
-            if df.empty or len(df) < 60: 
-                # 如果获取不到数据，保留持仓，跳过
-                for p in st.session_state.portfolio:
-                    if p['symbol'] + "/USDT:USDT" == sym: active_portfolio.append(p)
-                continue
+            if df.empty or len(df) < 60: continue
             
             logs["total"] += 1
             last = df.iloc[-1]
@@ -171,13 +172,14 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
             candle_ts = int(last["ts"])
             
             # --- A. 检查持仓是否触发平仓 ---
-            is_closed = False
-            for p in st.session_state.portfolio:
+            # 遍历当前所有持仓
+            for p in list(st.session_state.portfolio): # list() 拷贝一份防止遍历时修改报错
                 if p['symbol'] == sym_name and p['status'] == 'open':
-                    # 检查止损/止盈
+                    processed_positions.add(sym_name)
                     exit_price = None
                     reason = ""
                     
+                    # 检查止损/止盈 (使用 High/Low 检查是否穿过)
                     if p['direction'] == 'long':
                         if l <= p['sl']: exit_price, reason = p['sl'], "触及止损"
                         elif h >= p['tp']: exit_price, reason = p['tp'], "触及止盈"
@@ -186,52 +188,31 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                         elif l <= p['tp']: exit_price, reason = p['tp'], "触及止盈"
                     
                     if exit_price:
-                        # 计算盈亏 (简单百分比，不含杠杆)
+                        # 计算盈亏
                         if p['direction'] == 'long':
                             pnl_pct = (exit_price - p['entry']) / p['entry']
                         else:
                             pnl_pct = (p['entry'] - exit_price) / p['entry']
                         
-                        result = "win" if pnl_pct > 0 else "loss"
                         record = {
                             "symbol": sym_name, "direction": p['direction'], 
                             "entry": p['entry'], "exit": exit_price, 
                             "pnl_pct": pnl_pct, "reason": reason,
                             "time": time.strftime("%Y-%m-%d %H:%M")
                         }
-                        st.session_state.history.insert(0, record) # 插入到最前
-                        p['status'] = 'closed'
-                        p['exit'] = exit_price
-                        p['pnl'] = pnl_pct
+                        st.session_state.history.insert(0, record)
+                        
+                        # 从持仓中移除
+                        st.session_state.portfolio.remove(p)
                         
                         # 推送平仓通知
-                        emoji = "🎉" if result == "win" else "💔"
+                        emoji = "🎉" if pnl_pct > 0 else "💔"
                         msg = f"{emoji} {sym_name} {p['direction'].upper()} 平仓\n{reason}\n盈亏: {pnl_pct*100:.2f}%"
                         send_push(msg)
-                        
-                        is_closed = True
-                    else:
-                        active_portfolio.append(p) # 继续持有
-            
-            # 更新持仓列表
-            st.session_state.portfolio = [p for p in st.session_state.portfolio if p['status'] == 'open']
-            st.session_state.portfolio.extend([p for p in st.session_state.portfolio if False]) # 这里的逻辑有点乱，重新整理
-            # 正确逻辑：上面循环里把 closed 的标记了，现在过滤掉 closed 的
-            st.session_state.portfolio = [p for p in st.session_state.portfolio if p['status'] == 'open']
-            # 注意：上面的循环里 active_portfolio 没用上，直接修改 session_state 即可
-            # 重新写一下持仓更新逻辑，避免引用问题
-            # 实际上上面的循环已经修改了 st.session_state.portfolio 里的对象状态
-            # 我们只需要在最后过滤掉 closed 的
-            # 但上面的循环里 p['status']='closed' 后，active_portfolio 没加，所以最后 portfolio 会剩 open 的
-            # 等等，上面的循环是遍历 st.session_state.portfolio，如果在遍历中修改状态，没问题。
-            # 但是 active_portfolio 没用到。
-            # 修正：
-            # 这里的逻辑是：遍历所有持仓，如果触发平仓，就修改状态并记录历史。
-            # 最后在函数末尾统一过滤掉 closed 的。
             
             # --- B. 寻找新信号 ---
-            # 只有当这个币种没有持仓时，才开新仓 (防止重复开仓)
-            has_position = any(p['symbol'] == sym_name and p['status'] == 'open' for p in st.session_state.portfolio)
+            # 只有当这个币种没有持仓时，才开新仓
+            has_position = any(p['symbol'] == sym_name for p in st.session_state.portfolio)
             
             if not has_position:
                 # 计算指标
@@ -248,9 +229,12 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                 if len(df_clean) >= 2:
                     prev_row, last_row = df_clean.iloc[0], df_clean.iloc[1]
                     
-                    # 过滤微小波动
+                    # 过滤微小波动 (增加最小波动要求，防止震荡市频繁开单)
                     volatility = (float(last_row["h"]) - float(last_row["l"])) / float(last_row["c"])
-                    if volatility >= 0.005:
+                    # 5m周期要求波动至少 0.8%，15m 要求 1%
+                    min_vol_req = 0.008 if tf == "5m" else 0.01
+                    
+                    if volatility >= min_vol_req:
                         
                         # 趋势策略
                         if trend_on:
@@ -263,17 +247,19 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                                 
                                 uptrend = c_val > ema200 and ema50 > ema200
                                 macd_cross = macd_prev < 0 and macd_curr > 0
+                                macd_dead_cross = macd_prev > 0 and macd_curr < 0
                                 vol_ok = vol_curr > vol_ma * t_cfg["trend_vol"]
                                 
+                                # 做多逻辑
                                 if uptrend and macd_cross and vol_ok:
-                                    sl = l_val - 1.5 * (h_val - l_val)
+                                    # 优化止损：至少要有 1% 的止损空间，或者基于 ATR
+                                    sl_dist = max(l_val * 0.01, 1.5 * (h_val - l_val))
+                                    sl = l_val - sl_dist
                                     tp = c_val + 2.0 * (c_val - sl)
                                     vol_ratio = vol_curr / vol_ma
                                     
-                                    # 记录信号
                                     new_signals.append({"币种":sym_name, "策略":"📈 趋势", "方向":"🟢 多", "入场":fmt_price(c_val), "止损":fmt_price(sl), "止盈":fmt_price(tp)})
                                     
-                                    # 加入模拟盘持仓
                                     st.session_state.portfolio.append({
                                         "symbol": sym_name, "direction": "long", 
                                         "entry": c_val, "sl": sl, "tp": tp, 
@@ -284,8 +270,10 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                                     send_push(f"{sym_name} 🟢趋势多\n逻辑: 均线多头+MACD金叉+放量({vol_ratio:.1f}x)\n入:{fmt_price(c_val)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}")
                                     logs["trend_pass"] += 1
                                     
-                                elif not uptrend and macd_prev > 0 and macd_curr < 0 and vol_ok:
-                                    sl = h_val + 1.5 * (h_val - l_val)
+                                # 做空逻辑 (只有允许做空且满足条件)
+                                elif short_allowed and (not uptrend) and macd_dead_cross and vol_ok:
+                                    sl_dist = max(h_val * 0.01, 1.5 * (h_val - l_val))
+                                    sl = h_val + sl_dist
                                     tp = c_val - 2.0 * (sl - c_val)
                                     vol_ratio = vol_curr / vol_ma
                                     
@@ -301,7 +289,7 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                                     send_push(f"{sym_name} 🔴趋势空\n逻辑: 均线空头+MACD死叉+放量({vol_ratio:.1f}x)\n入:{fmt_price(c_val)} 损:{fmt_price(sl)} 盈:{fmt_price(tp)}")
                                     logs["trend_pass"] += 1
 
-                        # 异动策略
+                        # 异动策略 (只做多)
                         if pump_on:
                             key_p = f"P_{sym_name}_{tf}_{candle_ts}"
                             if key_p not in st.session_state.cache_data:
@@ -316,8 +304,8 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
                                 pump_ok = change > t_cfg["pump_pct"]
                                 
                                 if breakout and vol_surge and pump_ok:
-                                    sl = l_val * 0.92
-                                    tp = c_val * 1.15
+                                    sl = l_val * 0.92 # 8% 止损
+                                    tp = c_val * 1.15 # 15% 止盈
                                     vol_ratio = vol_curr / vol_ma
                                     
                                     new_signals.append({"币种":sym_name, "策略":"🚀 异动", "方向":"🚀 突破", "入场":fmt_price(c_val), "止损":fmt_price(sl), "止盈":fmt_price(tp)})
@@ -334,18 +322,6 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
 
         status.update(label="扫描完成!", state="complete")
 
-    # 清理已平仓的记录 (上面循环里虽然标记了 closed，但列表里还在，这里过滤一下)
-    # 注意：上面的循环逻辑有点问题，st.session_state.portfolio 在循环中被修改可能会影响迭代
-    # 安全做法：
-    closed_positions = [p for p in st.session_state.portfolio if p['status'] == 'closed']
-    st.session_state.portfolio = [p for p in st.session_state.portfolio if p['status'] == 'open']
-    
-    # 把平仓的加入历史
-    for p in closed_positions:
-         if p not in st.session_state.history: # 简单去重
-             # 上面循环里其实已经加了，这里不用重复加，除非逻辑有误
-             pass
-
     save_portfolio_state()
     return pd.DataFrame(new_signals) if new_signals else pd.DataFrame(columns=["币种","策略","方向","入场","止损","止盈"]), logs
 
@@ -353,13 +329,12 @@ def scan_and_manage_portfolio(tf, t_cfg, trend_on, pump_on):
 if EXCHANGE:
     st.info(f"📡 监控池: {len(SYMBOLS)} 合约 | 数据源: {EXCHANGE_NAME}")
     
-    df_sig, log_data = scan_and_manage_portfolio(tf, cfg, enable_trend, enable_pump)
+    df_sig, log_data = scan_and_manage_portfolio(tf, cfg, enable_trend, enable_pump, allow_short)
 
     # --- 模拟盘战绩看板 ---
     st.subheader("💰 模拟盘实时战绩")
     col1, col2, col3, col4 = st.columns(4)
     
-    # 计算统计数据
     wins = [h for h in st.session_state.history if h['pnl_pct'] > 0]
     losses = [h for h in st.session_state.history if h['pnl_pct'] <= 0]
     total_pnl = sum(h['pnl_pct'] for h in st.session_state.history)
@@ -372,23 +347,39 @@ if EXCHANGE:
     
     # 显示持仓列表
     if st.session_state.portfolio:
-        st.markdown("📋 **当前持仓 (浮盈/浮亏)**")
-        # 计算每个持仓的当前浮动盈亏 (粗略计算，基于最新价，这里简化显示)
-        # 为了性能，不实时查所有持仓的现价，只显示开仓信息
+        st.markdown("📋 **当前持仓**")
         pos_df = pd.DataFrame(st.session_state.portfolio)
-        pos_df['开仓时间'] = pos_df['time']
-        pos_df['方向'] = pos_df['direction'].apply(lambda x: "🟢 多" if x=="long" else "🔴 空")
-        pos_df = pos_df[['symbol', '方向', 'entry', 'sl', 'tp', '开仓时间']]
-        st.dataframe(pos_df, use_container_width=True, hide_index=True)
+        if not pos_df.empty:
+            pos_df['方向'] = pos_df['direction'].apply(lambda x: "🟢 多" if x=="long" else "🔴 空")
+            # 格式化价格
+            pos_df['entry_fmt'] = pos_df['entry'].apply(fmt_price)
+            pos_df['sl_fmt'] = pos_df['sl'].apply(fmt_price)
+            pos_df['tp_fmt'] = pos_df['tp'].apply(fmt_price)
+            
+            # 只显示需要的列
+            display_cols = ['symbol', '方向', 'entry_fmt', 'sl_fmt', 'tp_fmt', 'time']
+            # 重命名列名
+            pos_df = pos_df.rename(columns={'entry_fmt': '入场价', 'sl_fmt': '止损价', 'tp_fmt': '止盈价', 'time': '开仓时间'})
+            st.dataframe(pos_df[display_cols], use_container_width=True, hide_index=True)
 
-    # 显示历史交易
+    # 显示历史交易 (修复 KeyError)
     if st.session_state.history:
         st.markdown("📜 **历史平仓记录**")
         hist_df = pd.DataFrame(st.session_state.history)
+        
+        # 确保列存在
+        if 'reason' not in hist_df.columns: hist_df['reason'] = "未知"
+        if 'time' not in hist_df.columns: hist_df['time'] = "-"
+        
         hist_df['结果'] = hist_df['pnl_pct'].apply(lambda x: " 盈利" if x > 0 else "💔 亏损")
         hist_df['盈亏'] = hist_df['pnl_pct'].apply(lambda x: f"{x*100:.2f}%")
-        hist_df = hist_df[['symbol', '方向', 'entry', 'exit', '盈亏', '结果', 'reason', 'time']]
-        st.dataframe(hist_df.head(10), use_container_width=True, hide_index=True) # 只显示最近10条
+        hist_df['方向'] = hist_df['direction'].apply(lambda x: "🟢 多" if x=="long" else "🔴 空")
+        
+        display_hist_cols = ['symbol', '方向', 'entry', 'exit', '盈亏', '结果', 'reason', 'time']
+        # 过滤掉不存在的列
+        safe_cols = [c for c in display_hist_cols if c in hist_df.columns]
+        
+        st.dataframe(hist_df[safe_cols].head(20), use_container_width=True, hide_index=True)
 
     # --- 信号看板 ---
     st.divider()
